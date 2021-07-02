@@ -158,8 +158,6 @@ void call(Map parameters = [:]) {
 
         String buildTool = checkBuildTool(config)
 		
-		println("DEBUGGING: build tool is $buildTool")
-
         script.commonPipelineEnvironment.projectName = config.projectName
 
         if (!script.commonPipelineEnvironment.projectName && config.inferProjectName) {
@@ -245,6 +243,7 @@ private String checkBuildTool(config) {
     switch (buildTool) {
         case 'maven':
             buildDescriptorPattern = 'pom.xml'
+			println("DEBUGGING: This line is executed")
             break
         case 'npm':
             buildDescriptorPattern = 'package.json'
