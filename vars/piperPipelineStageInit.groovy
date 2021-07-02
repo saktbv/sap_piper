@@ -218,7 +218,6 @@ void call(Map parameters = [:]) {
         }
         pipelineStashFilesBeforeBuild script: script
 		
-		println("DEBUGGING: Build Tools is "+buildTool)
     }
 }
 
