@@ -217,6 +217,8 @@ void call(Map parameters = [:]) {
             artifactPrepareVersion prepareVersionParams
         }
         pipelineStashFilesBeforeBuild script: script
+		
+		println("DEBUGGING: Build Tools is "+buildTool)
     }
 }
 
@@ -243,7 +245,6 @@ private String checkBuildTool(config) {
     switch (buildTool) {
         case 'maven':
             buildDescriptorPattern = 'pom.xml'
-			println("DEBUGGING: This line is executed")
             break
         case 'npm':
             buildDescriptorPattern = 'package.json'
