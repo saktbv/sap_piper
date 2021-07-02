@@ -70,7 +70,7 @@ void call(Map parameters = [:]) {
 
         // telemetry reporting
         utils.pushToSWA([stepParam1: config.buildTool, 'buildTool': config.buildTool], config)
-
+        println("Build tool is "+config.buildTool)
         switch(config.buildTool){
             case 'maven':
                 mavenBuild script: script
