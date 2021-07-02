@@ -157,6 +157,8 @@ void call(Map parameters = [:]) {
         }
 
         String buildTool = checkBuildTool(config)
+		
+		println("DEBUGGING: This step is reached")
 
         script.commonPipelineEnvironment.projectName = config.projectName
 
