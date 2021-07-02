@@ -55,6 +55,7 @@ void call(Map parameters = [:]) {
         .addIfEmpty('npmExecuteLint', script.commonPipelineEnvironment.configuration.runStep?.get(stageName)?.npmExecuteLint)
         .addIfEmpty('mavenExecuteStaticCodeChecks', script.commonPipelineEnvironment.configuration.runStep?.get(stageName)?.mavenExecuteStaticCodeChecks)
         .use()
+	println("DEBUGGING: Now checking common pipeline environment values "+script.commonPipelineEnvironment.configuration)
 
     piperStageWrapper (script: script, stageName: stageName) {
 
@@ -62,10 +63,9 @@ void call(Map parameters = [:]) {
         utils.pushToSWA([step: STEP_NAME], config)
 
         durationMeasure(script: script, measurementName: 'build_duration') {
-            println("DEBUGGING: checking common pipeline environment values"+script.commonPipelineEnvironment.configuration)
             buildExecute script: script
             pipelineStashFilesAfterBuild script: script
-            println("DEBUGGING: Checking if this step is reached!")
+            
             try {
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script
