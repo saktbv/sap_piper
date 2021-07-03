@@ -12,16 +12,6 @@ void call(Map parameters = [:]) {
     List credentials = [[type: 'token', id: 'altDeploymentRepositoryPasswordId', env: ['PIPER_altDeploymentRepositoryPassword']]]
     final script = checkScript(this, parameters) ?: this
     parameters = DownloadCacheUtils.injectDownloadCacheInParameters(script, parameters, BuildTool.MAVEN)
-	println("DEBUGGING ---- START ----")
-	def list = []
-
-	def dir = new File("./")
-	dir.eachFileRecurse (FileType.FILES) { file ->
-	  list << file
-	}
-	list.each {
-	  println it.path
-	}
-	println("DEBUGGING ---- END ----")
+	
     piperExecuteBin(parameters, STEP_NAME, METADATA_FILE, credentials)
 }
