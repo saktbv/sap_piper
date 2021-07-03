@@ -55,8 +55,7 @@ void call(Map parameters = [:]) {
         .addIfEmpty('npmExecuteLint', script.commonPipelineEnvironment.configuration.runStep?.get(stageName)?.npmExecuteLint)
         .addIfEmpty('mavenExecuteStaticCodeChecks', script.commonPipelineEnvironment.configuration.runStep?.get(stageName)?.mavenExecuteStaticCodeChecks)
         .use()
-	println("DEBUGGING: Now checking common pipeline environment values "+script.commonPipelineEnvironment.configuration)
-
+	
     piperStageWrapper (script: script, stageName: stageName) {
 
         // telemetry reporting

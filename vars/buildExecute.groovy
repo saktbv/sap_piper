@@ -70,9 +70,10 @@ void call(Map parameters = [:]) {
 
         // telemetry reporting
         utils.pushToSWA([stepParam1: config.buildTool, 'buildTool': config.buildTool], config)
-        println("Build tool is "+config.buildTool)
+        
         switch(config.buildTool){
             case 'maven':
+			    println("DEBUGGING: In the mavenBuild Switch Case block!")
                 mavenBuild script: script
                 // in case node_modules exists we assume npm install was executed by maven clean install
                 if (fileExists('package.json') && !fileExists('node_modules')) {
