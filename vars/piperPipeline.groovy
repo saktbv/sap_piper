@@ -25,6 +25,13 @@ void call(parameters) {
                 steps {
                     piperPipelineStageBuild script: parameters.script
                 }
+				post{
+                    always{
+                        testsPublishResults(
+                            junit: [pattern: '**/target/TEST*.xml', archive: true, updateResults: true, allowEmptyResults: true]
+                        )
+                    }
+                }
             }
             /*stage('Additional Unit Tests') {
                 when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
@@ -84,7 +91,16 @@ void call(parameters) {
         }
         post {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */
-            success {buildSetResult(currentBuild)}
+            success {
+			    buildSetResult(currentBuild)
+                script{
+                    unstash(name: 'TARGET')
+                    sh 'ls -ltr' 
+                    recordIssues enabledForFailure: true, tools: [pmdParser()]
+                    junit '**/target/surefire-reports/*Test.xml' 
+                    jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true                
+                }	 
+			}
             aborted {buildSetResult(currentBuild, 'ABORTED')}
             failure {buildSetResult(currentBuild, 'FAILURE')}
             unstable {buildSetResult(currentBuild, 'UNSTABLE')}
