@@ -11,6 +11,6 @@ void call(Map parameters = [:]) {
     List credentials = [[type: 'token', id: 'altDeploymentRepositoryPasswordId', env: ['PIPER_altDeploymentRepositoryPassword']]]
     final script = checkScript(this, parameters) ?: this
     parameters = DownloadCacheUtils.injectDownloadCacheInParameters(script, parameters, BuildTool.MAVEN)
-
+    println("DEBUGGING: Checking if in the mavenBuild class!")
     piperExecuteBin(parameters, STEP_NAME, METADATA_FILE, credentials)
 }
