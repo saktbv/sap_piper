@@ -7,6 +7,7 @@ import com.sap.piper.PiperGoUtils
 import com.sap.piper.Utils
 import com.sap.piper.analytics.InfluxData
 import groovy.transform.Field
+import groovy.io.FileType
 
 import static com.sap.piper.Prerequisites.checkScript
 

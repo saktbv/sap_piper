@@ -1,7 +1,6 @@
 import com.sap.piper.BuildTool
 import com.sap.piper.DownloadCacheUtils
 import groovy.transform.Field
-import groovy.io.FileType
 
 import static com.sap.piper.Prerequisites.checkScript
 
