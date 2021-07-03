@@ -25,13 +25,6 @@ void call(parameters) {
                 steps {
                     piperPipelineStageBuild script: parameters.script
                 }
-				/*post{
-                    always{
-                        testsPublishResults(
-                            junit: [pattern: '**/target/TEST*.xml', archive: true, updateResults: true, allowEmptyResults: true]
-                        )
-                    }
-                }*/
             }
             /*stage('Additional Unit Tests') {
                 when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
