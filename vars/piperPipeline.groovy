@@ -1,6 +1,6 @@
 void call(parameters) {
     pipeline {
-        agent none
+        agent any
         triggers {
             issueCommentTrigger('.*/piper ([a-z]*).*')
         }
