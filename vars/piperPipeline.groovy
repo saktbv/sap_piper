@@ -14,19 +14,19 @@ void call(parameters) {
                     piperPipelineStageInit script: parameters.script, customDefaults: ['com.sap.piper/pipeline/stageOrdinals.yml'].plus(parameters.customDefaults ?: [])
                 }
             }
-            stage('Pull-Request Voting') {
+            /*stage('Pull-Request Voting') {
                 when { anyOf { branch 'PR-*'; branch parameters.script.commonPipelineEnvironment.getStepConfiguration('piperPipelineStagePRVoting', 'Pull-Request Voting').customVotingBranch } }
                 steps {
                     piperPipelineStagePRVoting script: parameters.script
                 }
-            }
+            }*/
             stage('Build') {
                 when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
                 steps {
                     piperPipelineStageBuild script: parameters.script
                 }
             }
-            stage('Additional Unit Tests') {
+            /*stage('Additional Unit Tests') {
                 when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
                 steps {
                     piperPipelineStageAdditionalUnitTests script: parameters.script
@@ -80,7 +80,7 @@ void call(parameters) {
                 steps {
                     piperPipelineStageRelease script: parameters.script
                 }
-            }
+            }*/
         }
         post {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */

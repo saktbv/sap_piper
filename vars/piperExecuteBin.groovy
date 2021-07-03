@@ -15,18 +15,6 @@ import static com.sap.piper.Prerequisites.checkScript
 
 void call(Map parameters = [:], String stepName, String metadataFile, List credentialInfo, boolean failOnMissingReports = false, boolean failOnMissingLinks = false, boolean failOnError = false) {
 
-    println("DEBUGGING ---- START ----")
-	def list = []
-
-	def dir = new File("./")
-	dir.eachFileRecurse (FileType.FILES) { file ->
-	  list << file
-	}
-	list.each {
-	  println it.path
-	}
-	println("DEBUGGING ---- END ----")
-	
 	Map handlePipelineStepErrorsParameters = [stepName: stepName, stepParameters: parameters]
     if (failOnError) {
         handlePipelineStepErrorsParameters.failOnError = true
