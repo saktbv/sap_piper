@@ -21,7 +21,7 @@ void call(parameters) {
                 }
             }*/
             stage('Build') {
-                when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
+                //when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
                 steps {
                     piperPipelineStageBuild script: parameters.script
                 }
