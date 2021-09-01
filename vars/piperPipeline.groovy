@@ -89,7 +89,9 @@ void call(parameters) {
                 script{
                     unstash(name: 'sonar')
 					unstash(name: 'checkmarx')
+					unstash(name: 'buildResult')
                     sh 'ls -ltr' 
+					sh 'ls -ltra unit-tests'
                     recordIssues enabledForFailure: true, tools: [pmdParser()]
                     junit '**/target/surefire-reports/*Test.xml' 
                     jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true                
