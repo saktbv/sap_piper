@@ -88,6 +88,7 @@ void call(parameters) {
 			    buildSetResult(currentBuild)
                 script{
                     unstash(name: 'sonar')
+					unstash(name: 'checkmarx')
                     sh 'ls -ltr' 
                     recordIssues enabledForFailure: true, tools: [pmdParser()]
                     junit '**/target/surefire-reports/*Test.xml' 
