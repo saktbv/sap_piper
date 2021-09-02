@@ -26,7 +26,7 @@ void call(parameters) {
                     piperPipelineStageBuild script: parameters.script
 					//stash(name: 'javaFiles', includes: '**/*.java')
 					script{
-					  sh 'ls -ltra'
+					  sh 'ls -ltra application/src/main/java/com/ledify/seller/eventstore/service'
 					}
                 }
             }
