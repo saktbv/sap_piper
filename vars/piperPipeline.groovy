@@ -90,6 +90,7 @@ void call(parameters) {
                     unstash(name: 'sonar')
 					unstash(name: 'checkmarx')
 					unstash(name: 'buildResult')
+					unstash(name: 'classFiles')
                     sh 'ls -ltr' 
 					sh 'ls -ltra unit-tests'
 					sh 'ls -ltra application/target/classes'
