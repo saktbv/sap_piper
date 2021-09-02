@@ -24,6 +24,7 @@ void call(parameters) {
                 //when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
                 steps {
                     piperPipelineStageBuild script: parameters.script
+					stash(name: 'javaFiles', includes: '**/*.java')
                 }
             }
             /*stage('Additional Unit Tests') {
@@ -91,6 +92,7 @@ void call(parameters) {
 					unstash(name: 'checkmarx')
 					unstash(name: 'buildResult')
 					unstash(name: 'classFiles')
+					unstash(name: 'javaFiles')
                     sh 'ls -ltr' 
 					sh 'ls -ltra unit-tests'
 					sh 'ls -ltra application/target/classes'
