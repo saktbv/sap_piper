@@ -94,7 +94,7 @@ void call(parameters) {
 					unstash(name: 'classFiles')
                     sh 'ls -ltr' 
 					sh 'ls -ltra unit-tests'
-					sh 'ls -ltra application'
+					sh 'ls -ltra application/src'
                     recordIssues enabledForFailure: true, tools: [pmdParser()]
                     junit '**/target/surefire-reports/*Test.xml' 
                     jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true                
