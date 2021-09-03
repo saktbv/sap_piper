@@ -95,6 +95,7 @@ void call(parameters) {
                     sh 'ls -ltr' 
 					sh 'ls -ltra unit-tests'
 					sh 'ls -ltra application/src/main/java/com/ledify/seller/eventstore'
+					sh 'pwd'
                     recordIssues enabledForFailure: true, tools: [pmdParser()]
                     junit '**/target/surefire-reports/*Test.xml' 
                     jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true                
