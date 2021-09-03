@@ -24,10 +24,6 @@ void call(parameters) {
                 //when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
                 steps {
                     piperPipelineStageBuild script: parameters.script
-					//stash(name: 'javaFiles', includes: '**/*.java')
-					script{
-					  sh 'ls -ltra application/src/main/java/com/ledify/seller/eventstore/service'
-					}
                 }
             }
             /*stage('Additional Unit Tests') {
@@ -91,11 +87,11 @@ void call(parameters) {
             success {
 			    buildSetResult(currentBuild)
                 script{
+				    unstash(name: 'source')
                     unstash(name: 'sonar')
 					unstash(name: 'checkmarx')
 					unstash(name: 'buildResult')
 					unstash(name: 'classFiles')
-					//unstash(name: 'javaFiles')
                     sh 'ls -ltr' 
 					sh 'ls -ltra unit-tests'
 					sh 'ls -ltra application/target/classes'
