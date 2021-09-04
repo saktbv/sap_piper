@@ -95,6 +95,7 @@ void call(parameters) {
                     sh 'ls -ltr' 
 					sh 'ls -ltra unit-tests'
 					sh 'ls -ltra application/src/main/java/com/ledify/seller/eventstore'
+					sh 'cat application/target/pmd.xml'
 					sh 'pwd'
                     recordIssues enabledForFailure: true, sourceDirectory: '/var/jenkins_home/workspace/PipelineTest4_cicd-intg', tools: [pmdParser()]
                     junit '**/target/surefire-reports/*Test.xml' 
