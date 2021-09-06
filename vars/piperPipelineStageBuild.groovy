@@ -70,6 +70,7 @@ void call(Map parameters = [:]) {
                 checksPublishResults script: script
             } finally {
 			    recordIssues enabledForFailure: true, tools: [pmdParser()]
+				jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
                 }
