@@ -24,7 +24,6 @@ void call(parameters) {
                 //when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
                 steps {
                     piperPipelineStageBuild script: parameters.script
-					recordIssues enabledForFailure: true, tools: [pmdParser()]
                 }
             }
             /*stage('Additional Unit Tests') {

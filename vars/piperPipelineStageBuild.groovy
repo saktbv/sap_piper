@@ -69,6 +69,7 @@ void call(Map parameters = [:]) {
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script
             } finally {
+			    recordIssues enabledForFailure: true, tools: [pmdParser()]
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
                 }
