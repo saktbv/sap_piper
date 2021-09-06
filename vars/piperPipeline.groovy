@@ -98,7 +98,7 @@ void call(parameters) {
 					sh 'cat application/target/pmd.xml'
 					sh 'pwd'
                     //recordIssues enabledForFailure: true, sourceDirectory: '/var/jenkins_home/workspace/PipelineTest4_cicd-intg', tools: [pmdParser()]
-                    junit '**/target/surefire-reports/*Test.xml' 
+                    //junit '**/target/surefire-reports/*Test.xml' 
                     jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true                
                 }	 
 			}
