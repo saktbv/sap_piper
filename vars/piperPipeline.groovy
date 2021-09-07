@@ -88,7 +88,7 @@ void call(parameters) {
 			    buildSetResult(currentBuild)
 				emailext body: """Hello,</br></br>
                             ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
-                            Please check console output at <a>$BUILD_URL</a> to view the results.</br></br>
+                            Please check console output <a href='$BUILD_URL'>here</a> to view the results.</br></br>
                             Regards,</br>
                             CIA4Auto DevOps Team""", subject: "${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: 'jyoti.chaudhury@capgemini.com'
 			}
@@ -97,7 +97,7 @@ void call(parameters) {
 				buildSetResult(currentBuild, 'FAILURE')
 			    emailext body: """Hello,</br></br>
                             ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
-                            Please check console output at <a>$BUILD_URL</a> to view the results.</br></br>
+                            Please check console output <a href='$BUILD_URL'>here</a> to view the results.</br></br>
                             Regards,</br>
                             CIA4Auto DevOps Team""", subject: "${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: 'jyoti.chaudhury@capgemini.com'
 			}
