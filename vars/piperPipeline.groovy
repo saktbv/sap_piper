@@ -88,6 +88,11 @@ void call(parameters) {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */
             success {
 			    buildSetResult(currentBuild)
+				emailext body: """Hello,</br></br>
+                            ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
+                            Please check console output <a href='$BUILD_URL'>here</a> to view the details.</br></br></br>
+                            Regards,</br>
+                            CIA4Auto DevOps Team""", subject: "Attention Required: ${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: "${emailTo}"
 			}
             aborted {buildSetResult(currentBuild, 'ABORTED')}
             failure {
@@ -96,7 +101,7 @@ void call(parameters) {
                             ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
                             Please check console output <a href='$BUILD_URL'>here</a> to view the details.</br></br></br>
                             Regards,</br>
-                            CIA4Auto DevOps Team""", subject: "Attention Required: ${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: ${emailTo}
+                            CIA4Auto DevOps Team""", subject: "Attention Required: ${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: "${emailTo}"
 			}
             unstable {buildSetResult(currentBuild, 'UNSTABLE')}
             cleanup {
