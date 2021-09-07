@@ -87,19 +87,19 @@ void call(parameters) {
             success {
 			    buildSetResult(currentBuild)
 				emailext body: """Hello,</br></br>
-                            ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult} for branch ${env.BRANCH_NAME}</br>
+                            ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
                             Please check console output at $BUILD_URL to view the results.</br></br>
                             Regards,</br>
-                            CIA4Auto DevOps Team""", subject: "${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult} for ${env.BRANCH_NAME} branch", to: 'jyoti.chaudhury@capgemini.com'
+                            CIA4Auto DevOps Team""", subject: "${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: 'jyoti.chaudhury@capgemini.com'
 			}
             aborted {buildSetResult(currentBuild, 'ABORTED')}
             failure {
 				buildSetResult(currentBuild, 'FAILURE')
 			    emailext body: """Hello,</br></br>
-                            ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult} for branch ${env.BRANCH_NAME}</br>
+                            ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
                             Please check console output at $BUILD_URL to view the results.</br></br>
                             Regards,</br>
-                            CIA4Auto DevOps Team""", subject: "${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult} for ${env.BRANCH_NAME} branch", to: 'jyoti.chaudhury@capgemini.com'
+                            CIA4Auto DevOps Team""", subject: "${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: 'jyoti.chaudhury@capgemini.com'
 			}
             unstable {buildSetResult(currentBuild, 'UNSTABLE')}
             cleanup {
