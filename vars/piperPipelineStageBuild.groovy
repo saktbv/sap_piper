@@ -71,6 +71,7 @@ void call(Map parameters = [:]) {
             } finally {
 			    recordIssues enabledForFailure: true, tools: [pmdParser()]
 				jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
+				publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './coverage/', reportFiles: 'index.html', reportName: 'Coverage Report', reportTitles: 'Coverage Report'])
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
                 }
