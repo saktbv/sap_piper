@@ -69,10 +69,10 @@ void call(Map parameters = [:]) {
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script
             } finally {
-			    //custom changes
+			    //custom changes by Jyoti Chaudhury
 			    recordIssues enabledForFailure: true, tools: [pmdParser()]
 				jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
-				//publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './coverage/', reportFiles: 'index.html', reportName: 'Coverage Report', reportTitles: 'Coverage Report'])
+				publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
 				publishCoverage adapters: [istanbulCoberturaAdapter('./coverage/cobertura-coverage.xml')], sourceFileResolver: sourceFiles('NEVER_STORE')
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
