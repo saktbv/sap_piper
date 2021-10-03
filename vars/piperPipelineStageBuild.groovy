@@ -74,7 +74,7 @@ void call(Map parameters = [:]) {
 				jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
 				publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
 				sh 'ls -ltr ./coverage'
-				publishCoverage adapters: [istanbulCoberturaAdapter('./coverage/cobertura-coverage.xml')], sourceFileResolver: sourceFiles('NEVER_STORE')
+				publishCoverage adapters: [istanbulCoberturaAdapter('/var/jenkins_home/workspace/LedifyUI_ui-automation@2/coverage/cobertura-coverage.xml')], sourceFileResolver: sourceFiles('NEVER_STORE')
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
                 }
