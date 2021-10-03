@@ -73,6 +73,7 @@ void call(Map parameters = [:]) {
 			    recordIssues enabledForFailure: true, tools: [pmdParser()]
 				jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
 				publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
+				sh 'ls -ltr'
 				publishCoverage adapters: [istanbulCoberturaAdapter('./coverage/cobertura-coverage.xml')], sourceFileResolver: sourceFiles('NEVER_STORE')
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
