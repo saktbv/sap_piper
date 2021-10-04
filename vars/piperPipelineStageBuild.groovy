@@ -72,7 +72,7 @@ void call(Map parameters = [:]) {
 			    //custom changes by Jyoti Chaudhury
 			    //recordIssues enabledForFailure: true, tools: [pmdParser()]
 				//jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
-				recordIssues enabledForFailure: true, tools: [tsLint(pattern: 'checkstyle-result.xml')]
+				recordIssues enabledForFailure: true, tools: [tsLint(pattern: '**/checkstyle-result.xml')]
 				publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
 				publishCoverage adapters: [istanbulCoberturaAdapter('**/cobertura-coverage.xml')], sourceFileResolver: sourceFiles('NEVER_STORE')
                 if (config.sonarExecuteScan) {
