@@ -74,7 +74,7 @@ void call(Map parameters = [:]) {
 				//jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
 				recordIssues enabledForFailure: true, tools: [tsLint(pattern: '**/checkstyle-result.xml')]
 				publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
-				publishCoverage adapters: [istanbulCoberturaAdapter('**/cobertura-coverage.xml')], sourceFileResolver: sourceFiles('NEVER_STORE')
+				publishCoverage adapters: [istanbulCoberturaAdapter('**/cobertura-coverage.xml')], thresholds: [[failUnhealthy: true, thresholdTarget: 'Line', unhealthyThreshold: 20.0]])], sourceFileResolver: sourceFiles('NEVER_STORE')
                 if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
                 }
