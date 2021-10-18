@@ -62,10 +62,12 @@ void call(Map parameters = [:]) {
         utils.pushToSWA([step: STEP_NAME], config)
 
         durationMeasure(script: script, measurementName: 'build_duration') {
-            buildExecute script: script
-            pipelineStashFilesAfterBuild script: script
+            //buildExecute script: script
+            //pipelineStashFilesAfterBuild script: script
             
             try {
+			    buildExecute script: script
+                pipelineStashFilesAfterBuild script: script
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script
             } finally {
