@@ -68,6 +68,7 @@ void call(Map parameters = [:]) {
             try {
 			    buildExecute script: script
                 pipelineStashFilesAfterBuild script: script
+				stash includes: '**/dist/**', name: 'DIST' //added by Jyoti Chaudhury
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script
             } finally {

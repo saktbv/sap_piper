@@ -1,6 +1,7 @@
 void call(parameters) {
     //send email notification to admin when the build fails
     def emailTo = 'jyoti.chaudhury@capgemini.com'
+	def sprint_number, org, target_repo, git_valid_message, git_commit_author, git_commit_email, git_commit_message
     pipeline {
         agent any
         triggers {
@@ -11,78 +12,75 @@ void call(parameters) {
             timestamps()
         }
         stages {
+		    stage('Pre-Init'){
+				steps{
+					withCredentials([usernameColonPassword(credentialsId: 'GITHUB_CREDS', variable: 'github_credential')]){
+					    deleteDir()
+						checkout scm
+						script{
+							def properties = readProperties  file:'sprint.info'
+							sprint_number = properties['sprint-number']
+							org = properties['github-org']
+							target_repo = properties['github-target-repo']
+							git_valid_message = properties['git-commit-message-to-promote']
+							git_commit_author = sh (
+													script: 'git log -1 --format=%an',
+													returnStdout: true
+												).trim()
+							echo "Last git committer user: ${git_commit_author}"	
+							git_commit_email = sh (
+													script: 'git --no-pager show -s --format=%ae',
+													returnStdout: true
+												).trim()
+							echo "Last git committer email: ${git_commit_email}"
+							git_commit_message = sh (
+													script: 'git log -1 --pretty=%B',
+													returnStdout: true
+												).trim()
+							echo "Last git commit message: ${git_commit_message}"
+						}
+					}
+				}
+			}
             stage('Init') {
                 steps {
                     piperPipelineStageInit script: parameters.script, customDefaults: ['com.sap.piper/pipeline/stageOrdinals.yml'].plus(parameters.customDefaults ?: [])
                 }
             }
-            /*stage('Pull-Request Voting') {
-                when { anyOf { branch 'PR-*'; branch parameters.script.commonPipelineEnvironment.getStepConfiguration('piperPipelineStagePRVoting', 'Pull-Request Voting').customVotingBranch } }
-                steps {
-                    piperPipelineStagePRVoting script: parameters.script
-                }
-            }*/
             stage('Build') {
-                //when {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
                 steps {
                     cia4autoUiPiperPipelineStageBuild script: parameters.script
                 }
             }
-            /*stage('Additional Unit Tests') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStageAdditionalUnitTests script: parameters.script
-                }
-            }
-            stage('Integration') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStageIntegration script: parameters.script
-                }
-            }
-            stage('Acceptance') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStageAcceptance script: parameters.script
-                }
-            }
-            stage('Security') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStageSecurity script: parameters.script
-                }
-            }
-            stage('Performance') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStagePerformance script: parameters.script
-                }
-            }
-            stage('Compliance') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStageCompliance script: parameters.script
-                }
-            }
-            stage('Confirm') {
+            /*stage('Confirm') {
                 agent none
                 when {allOf {expression { env.BRANCH_NAME ==~ parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch }; anyOf {expression {return (currentBuild.result == 'UNSTABLE')}; expression {return parameters.script.commonPipelineEnvironment.getStepConfiguration('piperInitRunStageConfiguration', env.STAGE_NAME).manualConfirmation}}}}
                 steps {
                     piperPipelineStageConfirm script: parameters.script
                 }
-            }
-            stage('Promote') {
-                when { branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch}
-                steps {
-                    piperPipelineStagePromote script: parameters.script
-                }
-            }
-            stage('Release') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
-                steps {
-                    piperPipelineStageRelease script: parameters.script
-                }
             }*/
+            stage('Promote-Build-Artifact') {
+                when{ 
+					expression { git_commit_message.contains(git_valid_message.trim()) }
+				}
+				steps {
+					withCredentials([usernameColonPassword(credentialsId: 'GITHUB_CREDS', variable: 'github_credential')]) {
+						script{
+							node{
+							    deleteDir()
+								unstash(name: 'DIST')
+								sh script: """
+									git init
+									git config user.name "${git_commit_author}"
+									git config user.email "${git_commit_email}"
+									git add -f dist
+									git commit -m "adding the dist directory"
+									git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git master:${sprint_number}"""
+							}
+						}
+					}
+				}
+            }
         }
         post {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */
