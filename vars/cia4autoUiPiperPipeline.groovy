@@ -68,14 +68,33 @@ void call(parameters) {
 						script{
 							node{
 							    deleteDir()
-								unstash(name: 'DIST')
-								sh script: """
-									git init
-									git config user.name "${git_commit_author}"
-									git config user.email "${git_commit_email}"
-									git add -f dist
-									git commit -m "adding the dist directory"
-									git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git master:${sprint_number}"""
+								check_if_branch_exists = sh (
+																script: """ set +x 
+																			git ls-remote --heads https://$github_credential@github.com/\"${org}\"/\"${target_repo}\".git $sprint_number
+																		""",
+																returnStdout: true
+															).trim()
+								if(check_if_branch_exists.equals("")){
+								    sh script: """
+										git config user.name "${git_commit_author}"
+										git config user.email "${git_commit_email}"
+										git clone --single-branch --branch ${sprint_number} https://$github_credential@github.com/\"$org\"/\"$target_repo\".git
+										rm -rf dist
+										unstash(name: 'DIST')
+										git add -f dist
+										git commit -m "updating the dist directory"
+										git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git ${sprint_number}"""
+								}
+								else{
+								    unstash(name: 'DIST')
+									sh script: """
+										git init
+										git config user.name "${git_commit_author}"
+										git config user.email "${git_commit_email}"
+										git add -f dist
+										git commit -m "adding the dist directory"
+										git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git master:${sprint_number}"""
+								}
 							}
 						}
 					}
