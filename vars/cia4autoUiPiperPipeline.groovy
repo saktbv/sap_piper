@@ -68,6 +68,7 @@ void call(parameters) {
 						script{
 							node{
 							    deleteDir()
+								unstash(name: 'DIST')
 								check_if_branch_exists = sh (
 																script: """ set +x 
 																			git ls-remote --heads https://$github_credential@github.com/\"${org}\"/\"${target_repo}\".git $sprint_number
@@ -75,7 +76,6 @@ void call(parameters) {
 																returnStdout: true
 															).trim()
 								if(check_if_branch_exists.equals("")){
-								    unstash(name: 'DIST')
 									sh script: """
 										git init
 										git config user.name "${git_commit_author}"
@@ -85,7 +85,6 @@ void call(parameters) {
 										git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git master:${sprint_number}"""
 								}
 								else{
-								    unstash(name: 'DIST')
 								    sh script: """
 										git clone --single-branch --branch ${sprint_number} https://$github_credential@github.com/\"$org\"/\"$target_repo\".git
 										cd $target_repo
