@@ -75,6 +75,16 @@ void call(parameters) {
 																returnStdout: true
 															).trim()
 								if(check_if_branch_exists.equals("")){
+								    unstash(name: 'DIST')
+									sh script: """
+										git init
+										git config user.name "${git_commit_author}"
+										git config user.email "${git_commit_email}"
+										git add -f dist
+										git commit -m "adding the dist directory"
+										git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git master:${sprint_number}"""
+								}
+								else{
 								    sh script: """
 										git config user.name "${git_commit_author}"
 										git config user.email "${git_commit_email}"
@@ -84,16 +94,6 @@ void call(parameters) {
 										git add -f dist
 										git commit -m "updating the dist directory"
 										git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git ${sprint_number}"""
-								}
-								else{
-								    unstash(name: 'DIST')
-									sh script: """
-										git init
-										git config user.name "${git_commit_author}"
-										git config user.email "${git_commit_email}"
-										git add -f dist
-										git commit -m "adding the dist directory"
-										git push https://$github_credential@github.com/\"$org\"/\"$target_repo\".git master:${sprint_number}"""
 								}
 							}
 						}
