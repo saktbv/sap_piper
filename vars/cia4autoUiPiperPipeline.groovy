@@ -12,7 +12,7 @@ void call(parameters) {
             timestamps()
         }
         stages {
-		    stage('Pre-Init'){
+		    /*stage('Pre-Init'){
 				steps{
 					withCredentials([usernameColonPassword(credentialsId: 'GITHUB_CREDS', variable: 'github_credential')]){
 					    deleteDir()
@@ -41,7 +41,7 @@ void call(parameters) {
 						}
 					}
 				}
-			}
+			}*/
             stage('Init') {
                 steps {
                     piperPipelineStageInit script: parameters.script, customDefaults: ['com.sap.piper/pipeline/stageOrdinals.yml'].plus(parameters.customDefaults ?: [])
@@ -59,7 +59,7 @@ void call(parameters) {
                     piperPipelineStageConfirm script: parameters.script
                 }
             }*/
-            stage('Promote-Build-Artifact') {
+            /*stage('Promote-Build-Artifact') {
                 when{ 
 					expression { git_commit_message.contains(git_valid_message.trim()) }
 				}
@@ -100,7 +100,7 @@ void call(parameters) {
 						}
 					}
 				}
-            }
+            }*/
         }
         post {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */
