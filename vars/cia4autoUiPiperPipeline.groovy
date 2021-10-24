@@ -68,7 +68,7 @@ void call(parameters) {
 						script{
 							node{
 							    deleteDir()
-								unstash(name: 'DIST')
+								unstash(name: 'dist')
 								check_if_branch_exists = sh (
 																script: """ set +x 
 																			git ls-remote --heads https://$github_credential@github.com/\"${org}\"/\"${target_repo}\".git $sprint_number
