@@ -86,6 +86,7 @@ void call(parameters) {
 								}
 								else{
 								    sh script: """
+									    ls -ltr
 										git clone --single-branch --branch ${sprint_number} https://$github_credential@github.com/\"$org\"/\"$target_repo\".git
 										cd $target_repo
 										rm -rf dist
