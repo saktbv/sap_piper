@@ -1,6 +1,4 @@
 void call(parameters) {
-    //send email notification to admin when the build fails
-    def emailTo = 'jyoti.chaudhury@capgemini.com'
     pipeline {
         agent any
         triggers {
@@ -86,18 +84,9 @@ void call(parameters) {
         }
         post {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */
-            success {
-			    buildSetResult(currentBuild)
-			}
+            success {buildSetResult(currentBuild)}
             aborted {buildSetResult(currentBuild, 'ABORTED')}
-            failure {
-				buildSetResult(currentBuild, 'FAILURE')
-			    emailext body: """Hello,</br></br>
-                            ${env.JOB_NAME} - Build # $BUILD_NUMBER ${currentBuild.currentResult}</br></br>
-                            Please check console output <a href='$BUILD_URL'>here</a> to view the details.</br></br></br>
-                            Regards,</br>
-                            CIA4Auto DevOps Team""", subject: "Attention Required: ${env.JOB_NAME}- Jenkins Build ${currentBuild.currentResult}", to: "${emailTo}"
-			}
+            failure {buildSetResult(currentBuild, 'FAILURE')}
             unstable {buildSetResult(currentBuild, 'UNSTABLE')}
             cleanup {
                 piperPipelineStagePost script: parameters.script
