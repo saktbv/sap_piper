@@ -77,9 +77,9 @@ void call(Map parameters = [:]) {
 				//recordIssues enabledForFailure: true, tools: [tsLint(pattern: '**/checkstyle-result.xml')]
 				//publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
 				//publishCoverage adapters: [istanbulCoberturaAdapter(path: '**/cobertura-coverage.xml', thresholds: [[failUnhealthy: true, thresholdTarget: 'Line', unhealthyThreshold: 10.0]])], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
-                //if (config.sonarExecuteScan) {
+                if (config.sonarExecuteScan) {
                     sonarExecuteScan script: script
-                //}
+                }
             }
         }
 
