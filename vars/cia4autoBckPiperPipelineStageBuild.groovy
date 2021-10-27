@@ -71,6 +71,7 @@ void call(Map parameters = [:]) {
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script
             } finally {
+			    echo "config value is : ${config}"
 			    //custom changes by Jyoti Chaudhury
 			    //recordIssues enabledForFailure: true, tools: [pmdParser()]
 				//jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
