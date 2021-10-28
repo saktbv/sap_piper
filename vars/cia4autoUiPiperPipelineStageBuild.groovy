@@ -73,8 +73,8 @@ void call(Map parameters = [:]) {
                 checksPublishResults script: script
             } finally {
 			    //custom changes by Jyoti Chaudhury
-			    //recordIssues enabledForFailure: true, tools: [pmdParser()]
-				//jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
+			    recordIssues enabledForFailure: true, tools: [pmdParser()]
+				jacoco exclusionPattern: '**/*Test*.class', inclusionPattern: '**/*.class', runAlways: true
 				//recordIssues enabledForFailure: true, tools: [tsLint(pattern: '**/checkstyle-result.xml')]
 				//publishHTML([allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true, reportDir: './Ledifyui/tests/', reportFiles: 'units.html', reportName: 'Unit Tests Report', reportTitles: 'Unit Tests Report'])
 				//publishCoverage adapters: [istanbulCoberturaAdapter(path: '**/cobertura-coverage.xml', thresholds: [[failUnhealthy: true, thresholdTarget: 'Line', unhealthyThreshold: 10.0]])], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
