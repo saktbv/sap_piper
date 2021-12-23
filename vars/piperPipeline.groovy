@@ -74,13 +74,13 @@ void call(parameters) {
                 steps {
                     piperPipelineStagePromote script: parameters.script
                 }
-            }
+            }*/
             stage('Release') {
-                when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
+                //when {allOf {branch parameters.script.commonPipelineEnvironment.getStepConfiguration('', '').productiveBranch; expression {return parameters.script.commonPipelineEnvironment.configuration.runStage?.get(env.STAGE_NAME)}}}
                 steps {
                     piperPipelineStageRelease script: parameters.script
                 }
-            }*/
+            }
         }
         post {
             /* https://jenkins.io/doc/book/pipeline/syntax/#post */
