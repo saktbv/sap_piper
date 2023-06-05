@@ -1,0 +1,20 @@
+general:
+  verbose: false
+  collectTelemetryData: false
+steps:
+  cnbBuild:
+    bindings:
+      maven-settings:
+        type: maven
+        key: settings.xml
+        content: "invalid xml"
+      dummy-binding:
+        type: dummy
+        data:
+        - key: dummy.yml
+          file: TestCnbIntegration/config.yml
+      dynatrace:
+        type: Dynatrace
+        data:
+        - key: api-key
+          vaultCredentialKey: dynatrace-api-key
