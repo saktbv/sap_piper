@@ -6,68 +6,86 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"text/template"
 
-	"github.com/SAP/jenkins-library/pkg/command"
+	"github.com/SAP/jenkins-library/pkg/docker"
+	piperhttp "github.com/SAP/jenkins-library/pkg/http"
+	"github.com/SAP/jenkins-library/pkg/kubernetes"
 	"github.com/SAP/jenkins-library/pkg/log"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
+	"github.com/pkg/errors"
+	"helm.sh/helm/v3/pkg/cli/values"
 )
 
 func kubernetesDeploy(config kubernetesDeployOptions, telemetryData *telemetry.CustomData) {
-	c := command.Command{
-		ErrorCategoryMapping: map[string][]string{
-			log.ErrorConfiguration.String(): {
-				"Error: Get * no such host",
-				"Error: path * not found",
-				"Error: rendered manifests contain a resource that already exists.",
-				"Error: unknown flag",
-				"Error: UPGRADE FAILED: * failed to replace object: * is invalid",
-				"Error: UPGRADE FAILED: * failed to create resource: * is invalid",
-				"Error: UPGRADE FAILED: an error occurred * not found",
-				"Error: UPGRADE FAILED: query: failed to query with labels:",
-				"Invalid value: \"\": field is immutable",
-			},
-			log.ErrorCustom.String(): {
-				"Error: release * failed, * timed out waiting for the condition",
-			},
-		},
-	}
-	// reroute stderr output to logging framework, stdout will be used for command interactions
-	c.Stderr(log.Writer())
+	customTLSCertificateLinks := []string{}
+	utils := kubernetes.NewDeployUtilsBundle(customTLSCertificateLinks)
 
-	// error situations should stop execution through log.Entry().Fatal() call which leads to an os.Exit(1) in the end
-	err := runKubernetesDeploy(config, &c, log.Writer())
+	// error situations stop execution through log.Entry().Fatal() call which leads to an os.Exit(1) in the end
+	err := runKubernetesDeploy(config, telemetryData, utils, log.Writer())
 	if err != nil {
 		log.Entry().WithError(err).Fatal("step execution failed")
 	}
 }
 
-func runKubernetesDeploy(config kubernetesDeployOptions, command command.ExecRunner, stdout io.Writer) error {
+func runKubernetesDeploy(config kubernetesDeployOptions, telemetryData *telemetry.CustomData, utils kubernetes.DeployUtils, stdout io.Writer) error {
+	telemetryData.Custom1Label = "deployTool"
+	telemetryData.Custom1 = config.DeployTool
+
 	if config.DeployTool == "helm" || config.DeployTool == "helm3" {
-		return runHelmDeploy(config, command, stdout)
+		err := runHelmDeploy(config, utils, stdout)
+		// download and execute teardown script
+		if len(config.TeardownScript) > 0 {
+			log.Entry().Debugf("start running teardownScript script %v", config.TeardownScript)
+			if scriptErr := downloadAndExecuteExtensionScript(config.TeardownScript, config.GithubToken, utils); scriptErr != nil {
+				if err != nil {
+					err = fmt.Errorf("failed to download/run teardownScript script: %v: %w", fmt.Sprint(scriptErr), err)
+				} else {
+					err = scriptErr
+				}
+			}
+			log.Entry().Debugf("finished running teardownScript script %v", config.TeardownScript)
+		}
+		return err
 	} else if config.DeployTool == "kubectl" {
-		return runKubectlDeploy(config, command)
+		return runKubectlDeploy(config, utils, stdout)
 	}
 	return fmt.Errorf("Failed to execute deployments")
 }
 
-func runHelmDeploy(config kubernetesDeployOptions, command command.ExecRunner, stdout io.Writer) error {
+func runHelmDeploy(config kubernetesDeployOptions, utils kubernetes.DeployUtils, stdout io.Writer) error {
 	if len(config.ChartPath) <= 0 {
 		return fmt.Errorf("chart path has not been set, please configure chartPath parameter")
 	}
 	if len(config.DeploymentName) <= 0 {
 		return fmt.Errorf("deployment name has not been set, please configure deploymentName parameter")
 	}
+
+	// download and execute setup script
+	if len(config.SetupScript) > 0 {
+		log.Entry().Debugf("start running setup script %v", config.SetupScript)
+		if err := downloadAndExecuteExtensionScript(config.SetupScript, config.GithubToken, utils); err != nil {
+			return fmt.Errorf("failed to download/run setup setup script: %w", err)
+		}
+		log.Entry().Debugf("finished running setup script %v", config.SetupScript)
+	}
+
 	_, containerRegistry, err := splitRegistryURL(config.ContainerRegistryURL)
 	if err != nil {
 		log.Entry().WithError(err).Fatalf("Container registry url '%v' incorrect", config.ContainerRegistryURL)
 	}
-	containerImageName, containerImageTag, err := splitFullImageName(config.Image)
+
+	helmValues, err := defineDeploymentValues(config, containerRegistry)
 	if err != nil {
-		log.Entry().WithError(err).Fatalf("Container image '%v' incorrect", config.Image)
+		return errors.Wrap(err, "failed to process deployment values")
 	}
+
 	helmLogFields := map[string]interface{}{}
 	helmLogFields["Chart Path"] = config.ChartPath
 	helmLogFields["Namespace"] = config.Namespace
@@ -81,29 +99,31 @@ func runHelmDeploy(config kubernetesDeployOptions, command command.ExecRunner, s
 		helmEnv = append(helmEnv, fmt.Sprintf("TILLER_NAMESPACE=%v", config.TillerNamespace))
 	}
 	log.Entry().Debugf("Helm SetEnv: %v", helmEnv)
-	command.SetEnv(helmEnv)
-	command.Stdout(stdout)
+	utils.SetEnv(helmEnv)
+	utils.Stdout(stdout)
 
 	if config.DeployTool == "helm" {
 		initParams := []string{"init", "--client-only"}
-		if err := command.RunExecutable("helm", initParams...); err != nil {
+		if err := utils.RunExecutable("helm", initParams...); err != nil {
 			log.Entry().WithError(err).Fatal("Helm init call failed")
 		}
 	}
 
-	var secretsData string
-	if len(config.DockerConfigJSON) == 0 && (len(config.ContainerRegistryUser) == 0 || len(config.ContainerRegistryPassword) == 0) {
-		log.Entry().Info("No container registry credentials or docker config.json file provided or credentials incomplete: skipping secret creation")
+	if len(config.ContainerRegistryUser) == 0 && len(config.ContainerRegistryPassword) == 0 {
+		log.Entry().Info("No/incomplete container registry credentials provided: skipping secret creation")
 		if len(config.ContainerRegistrySecret) > 0 {
-			secretsData = fmt.Sprintf(",imagePullSecrets[0].name=%v", config.ContainerRegistrySecret)
+			helmValues.add("imagePullSecrets[0].name", config.ContainerRegistrySecret)
 		}
 	} else {
 		var dockerRegistrySecret bytes.Buffer
-		command.Stdout(&dockerRegistrySecret)
-		kubeSecretParams := defineKubeSecretParams(config, containerRegistry)
+		utils.Stdout(&dockerRegistrySecret)
+		err, kubeSecretParams := defineKubeSecretParams(config, containerRegistry, utils)
+		if err != nil {
+			log.Entry().WithError(err).Fatal("parameter definition for creating registry secret failed")
+		}
 		log.Entry().Infof("Calling kubectl create secret --dry-run=true ...")
 		log.Entry().Debugf("kubectl parameters %v", kubeSecretParams)
-		if err := command.RunExecutable("kubectl", kubeSecretParams...); err != nil {
+		if err := utils.RunExecutable("kubectl", kubeSecretParams...); err != nil {
 			log.Entry().WithError(err).Fatal("Retrieving Docker config via kubectl failed")
 		}
 
@@ -120,10 +140,12 @@ func runHelmDeploy(config kubernetesDeployOptions, command command.ExecRunner, s
 		// make sure that secret is hidden in log output
 		log.RegisterSecret(dockerRegistrySecretData.Data.DockerConfJSON)
 
-		log.Entry().Debugf("Secret created: %v", string(dockerRegistrySecret.Bytes()))
+		log.Entry().Debugf("Secret created: %v", dockerRegistrySecret.String())
 
 		// pass secret in helm default template way and in Piper backward compatible way
-		secretsData = fmt.Sprintf(",secret.name=%v,secret.dockerconfigjson=%v,imagePullSecrets[0].name=%v", config.ContainerRegistrySecret, dockerRegistrySecretData.Data.DockerConfJSON, config.ContainerRegistrySecret)
+		helmValues.add("secret.name", config.ContainerRegistrySecret)
+		helmValues.add("secret.dockerconfigjson", dockerRegistrySecretData.Data.DockerConfJSON)
+		helmValues.add("imagePullSecrets[0].name", config.ContainerRegistrySecret)
 	}
 
 	// Deprecated functionality
@@ -132,9 +154,8 @@ func runHelmDeploy(config kubernetesDeployOptions, command command.ExecRunner, s
 	// Due to the way helm is implemented it is currently not possible to overwrite a part of a list:
 	// see: https://github.com/helm/helm/issues/5711#issuecomment-636177594
 	// Recommended way is to use a custom values file which contains the appropriate data
-	ingressHosts := ""
 	for i, h := range config.IngressHosts {
-		ingressHosts += fmt.Sprintf(",ingress.hosts[%v]=%v", i, h)
+		helmValues.add(fmt.Sprintf("ingress.hosts[%v]", i), h)
 	}
 
 	upgradeParams := []string{
@@ -147,12 +168,16 @@ func runHelmDeploy(config kubernetesDeployOptions, command command.ExecRunner, s
 		upgradeParams = append(upgradeParams, "--values", v)
 	}
 
+	err = helmValues.mapValues()
+	if err != nil {
+		return errors.Wrap(err, "failed to map values using 'valuesMapping' configuration")
+	}
+
 	upgradeParams = append(
 		upgradeParams,
 		"--install",
 		"--namespace", config.Namespace,
-		"--set",
-		fmt.Sprintf("image.repository=%v/%v,image.tag=%v%v%v", containerRegistry, containerImageName, containerImageTag, secretsData, ingressHosts),
+		"--set", strings.Join(helmValues.marshal(), ","),
 	)
 
 	if config.ForceUpdates {
@@ -175,20 +200,65 @@ func runHelmDeploy(config kubernetesDeployOptions, command command.ExecRunner, s
 		upgradeParams = append(upgradeParams, "--kube-context", config.KubeContext)
 	}
 
+	if config.RenderSubchartNotes {
+		upgradeParams = append(upgradeParams, "--render-subchart-notes")
+	}
+
 	if len(config.AdditionalParameters) > 0 {
 		upgradeParams = append(upgradeParams, config.AdditionalParameters...)
 	}
 
-	command.Stdout(stdout)
+	utils.Stdout(stdout)
 	log.Entry().Info("Calling helm upgrade ...")
 	log.Entry().Debugf("Helm parameters %v", upgradeParams)
-	if err := command.RunExecutable("helm", upgradeParams...); err != nil {
+	if err := utils.RunExecutable("helm", upgradeParams...); err != nil {
 		log.Entry().WithError(err).Fatal("Helm upgrade call failed")
 	}
+
+	// download and execute verification script
+	if len(config.VerificationScript) > 0 {
+		log.Entry().Debugf("start running verification script %v", config.VerificationScript)
+		if err := downloadAndExecuteExtensionScript(config.VerificationScript, config.GithubToken, utils); err != nil {
+			return fmt.Errorf("failed to download/run verification script: %w", err)
+		}
+		log.Entry().Debugf("finished running verification script %v", config.VerificationScript)
+	}
+
+	testParams := []string{
+		"test",
+		config.DeploymentName,
+		"--namespace", config.Namespace,
+	}
+
+	if len(config.KubeContext) > 0 {
+		testParams = append(testParams, "--kube-context", config.KubeContext)
+	}
+
+	if config.DeployTool == "helm" {
+		testParams = append(testParams, "--timeout", strconv.Itoa(config.HelmTestWaitSeconds))
+	}
+
+	if config.DeployTool == "helm3" {
+		testParams = append(testParams, "--timeout", fmt.Sprintf("%vs", config.HelmTestWaitSeconds))
+	}
+
+	if config.ShowTestLogs {
+		testParams = append(
+			testParams,
+			"--logs",
+		)
+	}
+
+	if config.RunHelmTests {
+		if err := utils.RunExecutable("helm", testParams...); err != nil {
+			log.Entry().WithError(err).Fatal("Helm test call failed")
+		}
+	}
+
 	return nil
 }
 
-func runKubectlDeploy(config kubernetesDeployOptions, command command.ExecRunner) error {
+func runKubectlDeploy(config kubernetesDeployOptions, utils kubernetes.DeployUtils, stdout io.Writer) error {
 	_, containerRegistry, err := splitRegistryURL(config.ContainerRegistryURL)
 	if err != nil {
 		log.Entry().WithError(err).Fatalf("Container registry url '%v' incorrect", config.ContainerRegistryURL)
@@ -202,7 +272,7 @@ func runKubectlDeploy(config kubernetesDeployOptions, command command.ExecRunner
 	if len(config.KubeConfig) > 0 {
 		log.Entry().Info("Using KUBECONFIG environment for authentication.")
 		kubeEnv := []string{fmt.Sprintf("KUBECONFIG=%v", config.KubeConfig)}
-		command.SetEnv(kubeEnv)
+		utils.SetEnv(kubeEnv)
 		if len(config.KubeContext) > 0 {
 			kubeParams = append(kubeParams, fmt.Sprintf("--context=%v", config.KubeContext))
 		}
@@ -213,49 +283,193 @@ func runKubectlDeploy(config kubernetesDeployOptions, command command.ExecRunner
 		kubeParams = append(kubeParams, fmt.Sprintf("--token=%v", config.KubeToken))
 	}
 
-	if config.CreateDockerRegistrySecret {
-		if len(config.DockerConfigJSON) == 0 && (len(config.ContainerRegistryUser) == 0 || len(config.ContainerRegistryPassword) == 0) {
-			log.Entry().Fatal("Cannot create Container registry secret without proper registry username/password or docker config.json file")
+	utils.Stdout(stdout)
+
+	if len(config.ContainerRegistryUser) == 0 && len(config.ContainerRegistryPassword) == 0 {
+		log.Entry().Info("No/incomplete container registry credentials provided: skipping secret creation")
+	} else {
+		err, kubeSecretParams := defineKubeSecretParams(config, containerRegistry, utils)
+		if err != nil {
+			log.Entry().WithError(err).Fatal("parameter definition for creating registry secret failed")
+		}
+		var dockerRegistrySecret bytes.Buffer
+		utils.Stdout(&dockerRegistrySecret)
+		log.Entry().Infof("Creating container registry secret '%v'", config.ContainerRegistrySecret)
+		kubeSecretParams = append(kubeSecretParams, kubeParams...)
+		log.Entry().Debugf("Running kubectl with following parameters: %v", kubeSecretParams)
+		if err := utils.RunExecutable("kubectl", kubeSecretParams...); err != nil {
+			log.Entry().WithError(err).Fatal("Creating container registry secret failed")
 		}
 
-		// first check if secret already exists
-		kubeCheckParams := append(kubeParams, "get", "secret", config.ContainerRegistrySecret)
-		if err := command.RunExecutable("kubectl", kubeCheckParams...); err != nil {
-			log.Entry().Infof("Registry secret '%v' does not exist, let's create it ...", config.ContainerRegistrySecret)
-			kubeSecretParams := defineKubeSecretParams(config, containerRegistry)
-			kubeSecretParams = append(kubeParams, kubeSecretParams...)
-			log.Entry().Infof("Creating container registry secret '%v'", config.ContainerRegistrySecret)
-			log.Entry().Debugf("Running kubectl with following parameters: %v", kubeSecretParams)
-			if err := command.RunExecutable("kubectl", kubeSecretParams...); err != nil {
-				log.Entry().WithError(err).Fatal("Creating container registry secret failed")
-			}
+		var dockerRegistrySecretData map[string]interface{}
+
+		if err := json.Unmarshal(dockerRegistrySecret.Bytes(), &dockerRegistrySecretData); err != nil {
+			log.Entry().WithError(err).Fatal("Reading docker registry secret json failed")
 		}
+
+		// write the json output to a file
+		tmpFolder := getTempDirForKubeCtlJSON()
+		defer os.RemoveAll(tmpFolder) // clean up
+		jsonData, _ := json.Marshal(dockerRegistrySecretData)
+		if err := ioutil.WriteFile(filepath.Join(tmpFolder, "secret.json"), jsonData, 0777); err != nil {
+			log.Entry().WithError(err).Warning("failed to write secret")
+		}
+
+		kubeSecretApplyParams := []string{"apply", "-f", filepath.Join(tmpFolder, "secret.json")}
+		if err := utils.RunExecutable("kubectl", kubeSecretApplyParams...); err != nil {
+			log.Entry().WithError(err).Fatal("Creating container registry secret failed")
+		}
+
 	}
 
-	appTemplate, err := ioutil.ReadFile(config.AppTemplate)
+	appTemplate, err := utils.FileRead(config.AppTemplate)
 	if err != nil {
 		log.Entry().WithError(err).Fatalf("Error when reading appTemplate '%v'", config.AppTemplate)
 	}
 
-	// Update image name in deployment yaml, expects placeholder like 'image: <image-name>'
-	re := regexp.MustCompile(`image:[ ]*<image-name>`)
-	appTemplate = []byte(re.ReplaceAllString(string(appTemplate), fmt.Sprintf("image: %v/%v", containerRegistry, config.Image)))
-
-	err = ioutil.WriteFile(config.AppTemplate, appTemplate, 0700)
+	values, err := defineDeploymentValues(config, containerRegistry)
 	if err != nil {
-		log.Entry().WithError(err).Fatalf("Error when updating appTemplate '%v'", config.AppTemplate)
+		return errors.Wrap(err, "failed to process deployment values")
+	}
+	err = values.mapValues()
+	if err != nil {
+		return errors.Wrap(err, "failed to map values using 'valuesMapping' configuration")
 	}
 
-	kubeApplyParams := append(kubeParams, "apply", "--filename", config.AppTemplate)
+	re := regexp.MustCompile(`image:[ ]*<image-name>`)
+	placeholderFound := re.Match(appTemplate)
+
+	if placeholderFound {
+		log.Entry().Warn("image placeholder '<image-name>' is deprecated and does not support multi-image replacement, please use Helm-like template syntax '{{ .Values.image.[image-name].reposotory }}:{{ .Values.image.[image-name].tag }}")
+		if values.singleImage {
+			// Update image name in deployment yaml, expects placeholder like 'image: <image-name>'
+			appTemplate = []byte(re.ReplaceAllString(string(appTemplate), fmt.Sprintf("image: %s:%s", values.get("image.repository"), values.get("image.tag"))))
+		} else {
+			return fmt.Errorf("multi-image replacement not supported for single image placeholder")
+		}
+	}
+
+	buf := bytes.NewBufferString("")
+	tpl, err := template.New("appTemplate").Parse(string(appTemplate))
+	if err != nil {
+		return errors.Wrap(err, "failed to parse app-template file")
+	}
+	err = tpl.Execute(buf, values.asHelmValues())
+	if err != nil {
+		return errors.Wrap(err, "failed to render app-template file")
+	}
+
+	err = utils.FileWrite(config.AppTemplate, buf.Bytes(), 0700)
+	if err != nil {
+		return errors.Wrapf(err, "Error when updating appTemplate '%v'", config.AppTemplate)
+	}
+
+	kubeParams = append(kubeParams, config.DeployCommand, "--filename", config.AppTemplate)
+	if config.ForceUpdates && config.DeployCommand == "replace" {
+		kubeParams = append(kubeParams, "--force")
+	}
+
 	if len(config.AdditionalParameters) > 0 {
-		kubeApplyParams = append(kubeApplyParams, config.AdditionalParameters...)
+		kubeParams = append(kubeParams, config.AdditionalParameters...)
 	}
-
-	if err := command.RunExecutable("kubectl", kubeApplyParams...); err != nil {
-		log.Entry().Debugf("Running kubectl with following parameters: %v", kubeApplyParams)
+	if err := utils.RunExecutable("kubectl", kubeParams...); err != nil {
+		log.Entry().Debugf("Running kubectl with following parameters: %v", kubeParams)
 		log.Entry().WithError(err).Fatal("Deployment with kubectl failed.")
 	}
 	return nil
+}
+
+type deploymentValues struct {
+	mapping     map[string]interface{}
+	singleImage bool
+	values      []struct {
+		key, value string
+	}
+}
+
+func (dv *deploymentValues) add(key, value string) {
+	dv.values = append(dv.values, struct {
+		key   string
+		value string
+	}{
+		key:   key,
+		value: value,
+	})
+}
+
+func (dv deploymentValues) get(key string) string {
+	for _, item := range dv.values {
+		if item.key == key {
+			return item.value
+		}
+	}
+
+	return ""
+}
+
+func (dv *deploymentValues) mapValues() error {
+	var keys []string
+	for k := range dv.mapping {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, dst := range keys {
+		srcString, ok := dv.mapping[dst].(string)
+		if !ok {
+			return fmt.Errorf("invalid path '%#v' is used for valuesMapping, only strings are supported", dv.mapping[dst])
+		}
+		if val := dv.get(srcString); val != "" {
+			dv.add(dst, val)
+		} else {
+			escapedSrcString := strings.ReplaceAll(srcString, "-", "_")
+			log.Entry().Debugf("property '%s' not found, trying with escaped version '%s'", srcString, escapedSrcString)
+			if val := dv.get(escapedSrcString); val != "" {
+				dv.add(dst, val)
+			} else {
+				return fmt.Errorf("can not map '%s: %s', %s is not set", dst, srcString, srcString)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (dv deploymentValues) marshal() []string {
+	var result []string
+	for _, item := range dv.values {
+		result = append(result, fmt.Sprintf("%s=%s", item.key, item.value))
+	}
+	return result
+}
+
+func (dv *deploymentValues) asHelmValues() map[string]interface{} {
+	valuesOpts := values.Options{
+		Values: dv.marshal(),
+	}
+	mergedValues, err := valuesOpts.MergeValues(nil)
+	if err != nil {
+		log.Entry().WithError(err).Fatal("failed to process deployment values")
+	}
+	return map[string]interface{}{
+		"Values": mergedValues,
+	}
+}
+
+func createKey(parts ...string) string {
+	escapedParts := make([]string, 0, len(parts))
+	replacer := strings.NewReplacer(".", "_", "-", "_")
+	for _, part := range parts {
+		escapedParts = append(escapedParts, replacer.Replace(part))
+	}
+	return strings.Join(escapedParts, ".")
+}
+
+func getTempDirForKubeCtlJSON() string {
+	tmpFolder, err := ioutil.TempDir(".", "temp-")
+	if err != nil {
+		log.Entry().WithError(err).WithField("path", tmpFolder).Debug("creating temp directory failed")
+	}
+	return tmpFolder
 }
 
 func splitRegistryURL(registryURL string) (protocol, registry string, err error) {
@@ -282,35 +496,108 @@ func splitFullImageName(image string) (imageName, tag string, err error) {
 	return "", "", fmt.Errorf("Failed to split image name '%v'", image)
 }
 
-func defineKubeSecretParams(config kubernetesDeployOptions, containerRegistry string) []string {
-	kubeSecretParams := []string{
+func defineKubeSecretParams(config kubernetesDeployOptions, containerRegistry string, utils kubernetes.DeployUtils) (error, []string) {
+	targetPath := ""
+	if len(config.DockerConfigJSON) > 0 {
+		// first enhance config.json with additional pipeline-related credentials if they have been provided
+		if len(containerRegistry) > 0 && len(config.ContainerRegistryUser) > 0 && len(config.ContainerRegistryPassword) > 0 {
+			var err error
+			targetPath, err = docker.CreateDockerConfigJSON(containerRegistry, config.ContainerRegistryUser, config.ContainerRegistryPassword, "", config.DockerConfigJSON, utils)
+			if err != nil {
+				log.Entry().Warningf("failed to update Docker config.json: %v", err)
+				return err, []string{}
+			}
+		}
+
+	} else {
+		return fmt.Errorf("no docker config json file found to update credentials '%v'", config.DockerConfigJSON), []string{}
+	}
+	return nil, []string{
 		"create",
 		"secret",
+		"generic",
+		config.ContainerRegistrySecret,
+		fmt.Sprintf("--from-file=.dockerconfigjson=%v", targetPath),
+		"--type=kubernetes.io/dockerconfigjson",
+		"--insecure-skip-tls-verify=true",
+		"--dry-run=client",
+		"--output=json",
 	}
-	if config.DeployTool == "helm" || config.DeployTool == "helm3" {
-		kubeSecretParams = append(
-			kubeSecretParams,
-			"--insecure-skip-tls-verify=true",
-			"--dry-run=true",
-			"--output=json",
-		)
+}
+
+func defineDeploymentValues(config kubernetesDeployOptions, containerRegistry string) (*deploymentValues, error) {
+	var err error
+	var useDigests bool
+	dv := &deploymentValues{
+		mapping: config.ValuesMapping,
+	}
+	if len(config.ImageNames) > 0 {
+		if len(config.ImageNames) != len(config.ImageNameTags) {
+			log.SetErrorCategory(log.ErrorConfiguration)
+			return nil, fmt.Errorf("number of imageNames and imageNameTags must be equal")
+		}
+		if len(config.ImageDigests) > 0 {
+			if len(config.ImageDigests) != len(config.ImageNameTags) {
+				log.SetErrorCategory(log.ErrorConfiguration)
+				return nil, fmt.Errorf("number of imageDigests and imageNameTags must be equal")
+			}
+
+			useDigests = true
+		}
+		for i, key := range config.ImageNames {
+			name, tag, err := splitFullImageName(config.ImageNameTags[i])
+			if err != nil {
+				log.Entry().WithError(err).Fatalf("Container image '%v' incorrect", config.ImageNameTags[i])
+			}
+
+			if useDigests {
+				tag = fmt.Sprintf("%s@%s", tag, config.ImageDigests[i])
+			}
+
+			dv.add(createKey("image", key, "repository"), fmt.Sprintf("%v/%v", containerRegistry, name))
+			dv.add(createKey("image", key, "tag"), tag)
+
+			if len(config.ImageNames) == 1 {
+				dv.singleImage = true
+				dv.add("image.repository", fmt.Sprintf("%v/%v", containerRegistry, name))
+				dv.add("image.tag", tag)
+			}
+		}
+	} else {
+		// support either image or containerImageName and containerImageTag
+		containerImageName := ""
+		containerImageTag := ""
+		dv.singleImage = true
+
+		if len(config.Image) > 0 {
+			containerImageName, containerImageTag, err = splitFullImageName(config.Image)
+			if err != nil {
+				log.Entry().WithError(err).Fatalf("Container image '%v' incorrect", config.Image)
+			}
+		} else if len(config.ContainerImageName) > 0 && len(config.ContainerImageTag) > 0 {
+			containerImageName = config.ContainerImageName
+			containerImageTag = config.ContainerImageTag
+		} else {
+			return nil, fmt.Errorf("image information not given - please either set image or containerImageName and containerImageTag")
+		}
+		dv.add("image.repository", fmt.Sprintf("%v/%v", containerRegistry, containerImageName))
+		dv.add("image.tag", containerImageTag)
+
+		dv.add(createKey("image", containerImageName, "repository"), fmt.Sprintf("%v/%v", containerRegistry, containerImageName))
+		dv.add(createKey("image", containerImageName, "tag"), containerImageTag)
 	}
 
-	if len(config.DockerConfigJSON) > 0 {
-		return append(
-			kubeSecretParams,
-			"generic",
-			config.ContainerRegistrySecret,
-			fmt.Sprintf("--from-file=.dockerconfigjson=%v", config.DockerConfigJSON),
-			"--type=\"kubernetes.io/dockerconfigjson\"",
-		)
+	return dv, nil
+}
+
+func downloadAndExecuteExtensionScript(script, githubToken string, utils kubernetes.DeployUtils) error {
+	setupScript, err := piperhttp.DownloadExecutable(githubToken, utils, utils, script)
+	if err != nil {
+		return fmt.Errorf("failed to download script %v: %w", script, err)
 	}
-	return append(
-		kubeSecretParams,
-		"docker-registry",
-		config.ContainerRegistrySecret,
-		fmt.Sprintf("--docker-server=%v", containerRegistry),
-		fmt.Sprintf("--docker-username=%v", config.ContainerRegistryUser),
-		fmt.Sprintf("--docker-password=%v", config.ContainerRegistryPassword),
-	)
+	err = utils.RunExecutable(setupScript)
+	if err != nil {
+		return fmt.Errorf("failed to execute script %v: %w", script, err)
+	}
+	return nil
 }

@@ -1,18 +1,21 @@
+//go:build unit
+// +build unit
+
 package protecode
 
 import (
-	"testing"
-
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +43,7 @@ func TestMapResponse(t *testing.T) {
 		assert.Equal(t, c.want, c.input)
 	}
 }
+
 func TestParseResultSuccess(t *testing.T) {
 
 	var result Result = Result{
@@ -48,15 +52,15 @@ func TestParseResultSuccess(t *testing.T) {
 		Status:    statusBusy,
 		Components: []Component{
 			{Vulns: []Vulnerability{
-				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve1", Cvss: 7.2, Cvss3Score: "0.0"}},
-				{Exact: true, Triage: []Triage{{ID: 1}}, Vuln: Vuln{Cve: "Cve2", Cvss: 2.2, Cvss3Score: "2.3"}},
-				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve2b", Cvss: 0.0, Cvss3Score: "0.0"}},
+				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve1", Cvss: "7.2", Cvss3Score: "0.0"}},
+				{Exact: true, Triage: []Triage{{ID: 1}}, Vuln: Vuln{Cve: "Cve2", Cvss: "2.2", Cvss3Score: "2.3"}},
+				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve2b", Cvss: "0.0", Cvss3Score: "0.0"}},
 			},
 			},
 			{Vulns: []Vulnerability{
-				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve3", Cvss: 3.2, Cvss3Score: "7.3"}},
-				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve4", Cvss: 8.0, Cvss3Score: "8.0"}},
-				{Exact: false, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve4b", Cvss: 8.0, Cvss3Score: "8.0"}},
+				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve3", Cvss: "3.2", Cvss3Score: "7.3"}},
+				{Exact: true, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve4", Cvss: "8.0", Cvss3Score: "8.0"}},
+				{Exact: false, Triage: []Triage{}, Vuln: Vuln{Cve: "Cve4b", Cvss: "8.0", Cvss3Score: "8.0"}},
 			},
 			},
 		},
@@ -156,7 +160,8 @@ func TestLoadExistingProductSuccess(t *testing.T) {
 
 		response := ProductData{
 			Products: []Product{
-				{ProductID: 1}},
+				{ProductID: 1, FileName: "file_1.zip"},
+			},
 		}
 
 		var b bytes.Buffer
@@ -169,13 +174,14 @@ func TestLoadExistingProductSuccess(t *testing.T) {
 	cases := []struct {
 		pc             Protecode
 		protecodeGroup string
+		fileName       string
 		want           int
 	}{
-		{makeProtecode(Options{ServerURL: server.URL}), "group", 1},
+		{makeProtecode(Options{ServerURL: server.URL}), "group", "file_1.zip", 1},
 	}
 	for _, c := range cases {
 
-		got := c.pc.LoadExistingProduct(c.protecodeGroup)
+		got := c.pc.LoadExistingProduct(c.protecodeGroup, c.fileName)
 		assert.Equal(t, c.want, got)
 	}
 }
@@ -183,6 +189,8 @@ func TestLoadExistingProductSuccess(t *testing.T) {
 func TestPollForResultSuccess(t *testing.T) {
 	requestURI := ""
 	var response ResultData = ResultData{}
+
+	protecodePollInterval = time.Nanosecond
 
 	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		requestURI = req.RequestURI
@@ -307,21 +315,40 @@ func TestDeclareFetchURLSuccess(t *testing.T) {
 	pc := makeProtecode(Options{ServerURL: server.URL})
 
 	cases := []struct {
-		cleanupMode    string
-		protecodeGroup string
-		fetchURL       string
-		want           string
+		cleanupMode       string
+		protecodeGroup    string
+		customDataJSONMap string
+		fetchURL          string
+		version           string
+		productID         int
+		replaceBinary     bool
+		want              int
 	}{
-		{"binary", "group1", "dummy", "/api/fetch/"},
-		{"Test", "group2", "dummy", "/api/fetch/"},
+		{"binary", "group1", `{"custom-header": "custom-value"}`, "/api/fetch/", "", 1, true, 111},
+		{"binary", "group1", "", "/api/fetch/", "custom-test-version", -1, true, 111},
+		{"binary", "group1", "", "/api/fetch/", "1.2.3", 0, true, 111},
+
+		{"binary", "group1", "", "/api/fetch/", "", 1, false, 111},
+		{"binary", "group1", "", "/api/fetch/", "custom-test-version", -1, false, 111},
+		{"binary", "group1", "", "/api/fetch/", "1.2.3", 0, false, 111},
 	}
 	for _, c := range cases {
 
-		pc.DeclareFetchURL(c.cleanupMode, c.protecodeGroup, c.fetchURL)
-		assert.Equal(t, requestURI, c.want)
+		// pc.DeclareFetchURL(c.cleanupMode, c.protecodeGroup, c.fetchURL)
+		got := pc.DeclareFetchURL(c.cleanupMode, c.protecodeGroup, c.customDataJSONMap, c.fetchURL, c.version, c.productID, c.replaceBinary)
+
+		assert.Equal(t, requestURI, "/api/fetch/")
+		assert.Equal(t, got.Result.ProductID, c.want)
+		assert.Equal(t, got.Result.Status, "")
+
 		assert.Contains(t, passedHeaders, "Group")
 		assert.Contains(t, passedHeaders, "Delete-Binary")
 		assert.Contains(t, passedHeaders, "Url")
+
+		if c.replaceBinary {
+			assert.Contains(t, passedHeaders, "Replace")
+		}
+
 	}
 }
 
@@ -329,7 +356,7 @@ func TestUploadScanFileSuccess(t *testing.T) {
 
 	requestURI := ""
 	var passedHeaders = map[string][]string{}
-	var multipartFile multipart.File
+	var reader io.Reader
 	var passedFileContents []byte
 	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 
@@ -342,25 +369,45 @@ func TestUploadScanFileSuccess(t *testing.T) {
 			}
 		}
 
-		response := Result{ProductID: 111, ReportURL: requestURI}
+		response := new(ResultData)
 
 		err := req.ParseMultipartForm(4096)
-		if err != nil {
-			t.FailNow()
+		if err == nil {
+			reader, _, err = req.FormFile("file")
+			if err != nil {
+				t.FailNow()
+			}
+		} else {
+			reader = req.Body
 		}
-		multipartFile, _, err = req.FormFile("file")
-		if err != nil {
-			t.FailNow()
-		}
+
 		defer req.Body.Close()
-		passedFileContents, err = ioutil.ReadAll(multipartFile)
+		passedFileContents, err = ioutil.ReadAll(reader)
 		if err != nil {
 			t.FailNow()
+		}
+
+		// When replace binary option is true then mock server should return same product id with http status code 201 (not 200)
+		if strReplaceID, isExist := passedHeaders["Replace"]; isExist {
+			// convert string to int
+			intReplaceID, _ := strconv.Atoi(strReplaceID[0])
+
+			response.Result.ProductID = intReplaceID
+			response.Result.ReportURL = requestURI
+
+			rw.WriteHeader(201)
+
+		} else {
+			response.Result.ProductID = 112
+			response.Result.ReportURL = requestURI
+
+			rw.WriteHeader(200)
 		}
 
 		var b bytes.Buffer
 		json.NewEncoder(&b).Encode(&response)
 		rw.Write([]byte(b.Bytes()))
+
 	}))
 	// Close the server when test finishes
 	defer server.Close()
@@ -378,21 +425,40 @@ func TestUploadScanFileSuccess(t *testing.T) {
 	}
 
 	cases := []struct {
-		cleanupMode    string
-		protecodeGroup string
-		fileName       string
-		want           string
+		cleanupMode       string
+		protecodeGroup    string
+		customDataJSONMap string
+		filePath          string
+		version           string
+		productID         int
+		replaceBinary     bool
+		want              int
 	}{
-		{"binary", "group1", testFile.Name(), "/api/upload/dummy"},
-		{"Test", "group2", testFile.Name(), "/api/upload/dummy"},
+		{"binary", "group1", `{"custom-header": "custom-value"}`, testFile.Name(), "", 1, true, 1},
+		{"binary", "group1", "", testFile.Name(), "custom-test-version", 0, true, 0},
+		{"binary", "group1", "", testFile.Name(), "1.2.3", -1, true, -1},
+
+		{"binary", "group1", "", testFile.Name(), "", 1, false, 112},
+		{"binary", "group1", "", testFile.Name(), "custom-test-version", 0, false, 112},
+		{"binary", "group1", "", testFile.Name(), "1.2.3", -1, false, 112},
+
+		// {"binary", "group1", testFile.Name(), "/api/upload/dummy"},
+		// {"Test", "group2", testFile.Name(), "/api/upload/dummy"},
 	}
 	for _, c := range cases {
 
-		pc.UploadScanFile(c.cleanupMode, c.protecodeGroup, c.fileName, "dummy")
-		assert.Equal(t, requestURI, c.want)
+		got := pc.UploadScanFile(c.cleanupMode, c.protecodeGroup, c.customDataJSONMap, c.filePath, "dummy.tar", c.version, c.productID, c.replaceBinary)
+
+		assert.Equal(t, requestURI, "/api/upload/dummy.tar")
 		assert.Contains(t, passedHeaders, "Group")
 		assert.Contains(t, passedHeaders, "Delete-Binary")
 		assert.Equal(t, fileContents, passedFileContents, "Uploaded file incorrect")
+		assert.Equal(t, c.want, got.Result.ProductID)
+		assert.Equal(t, "", got.Result.Status)
+
+		if c.replaceBinary {
+			assert.Contains(t, passedHeaders, "Replace")
+		}
 	}
 }
 

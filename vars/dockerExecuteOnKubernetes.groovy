@@ -35,6 +35,7 @@ import hudson.AbortException
         'inheritFrom',
         'additionalPodProperties',
         'resources',
+        'annotations',
     /**
      * Set this to 'false' to bypass a docker image pull.
      * Useful during development process. Allows testing of images which are available in the local registry only.
@@ -72,6 +73,10 @@ import hudson.AbortException
      * really know what you are doing.
      */
     'additionalPodProperties',
+    /**
+    * Adds annotations in the metadata section of the PodSpec
+    */
+    'annotations',
     /**
      * Allows to specify start command for container created with dockerImage parameter to overwrite Piper default (`/usr/bin/tail -f /dev/null`).
      */
@@ -300,8 +305,10 @@ void executeOnPod(Map config, utils, Closure body, Script script) {
     try {
         SidecarUtils sidecarUtils = new SidecarUtils(script)
         def stashContent = config.stashContent
+        boolean defaultStashCreated = false
         if (config.containerName && stashContent.isEmpty()) {
             stashContent = [stashWorkspace(config, 'workspace')]
+            defaultStashCreated = true
         }
         podTemplate(getOptions(config)) {
             node(config.uniqueId) {
@@ -317,9 +324,18 @@ void executeOnPod(Map config, utils, Closure body, Script script) {
                     container(containerParams) {
                         try {
                             utils.unstashAll(stashContent)
-                            echo "invalidate stash workspace-${config.uniqueId}"
-                            stash name: "workspace-${config.uniqueId}", excludes: '**/*', allowEmpty: true
-                            body()
+                            if (config.verbose) {
+                                lsDir('Directory content before body execution')
+                            }
+                            if (defaultStashCreated) {
+                                echo "invalidate stash workspace-${config.uniqueId}"
+                                stash name: "workspace-${config.uniqueId}", excludes: '**/*', allowEmpty: true
+                            }
+                            def result = body()
+                            if (config.verbose) {
+                                lsDir('Directory content after body execution')
+                            }
+                            return result
                         } finally {
                             stashWorkspace(config, 'container', true, true)
                         }
@@ -335,15 +351,27 @@ void executeOnPod(Map config, utils, Closure body, Script script) {
     }
 }
 
+private void lsDir(String message) {
+  echo "[DEBUG] Begin of ${message}"
+  // some images might not contain the find command. In that case the build must not be aborted.
+  catchError (message: 'Cannot list directory content', buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+    // no -ls option since this is not available for some images
+    sh  'find . -mindepth 1 -maxdepth 2'
+  }
+  echo "[DEBUG] End of ${message}"
+}
+
 private String generatePodSpec(Map config) {
     def podSpec = [
         apiVersion: "v1",
         kind      : "Pod",
         metadata  : [
-            lables: config.uniqueId
+            lables: config.uniqueId,
+            annotations: [:]
         ],
         spec      : [:]
     ]
+    podSpec.metadata.annotations = getAnnotations(config)
     podSpec.spec += getAdditionalPodProperties(config)
     podSpec.spec.initContainers = getInitContainerList(config)
     podSpec.spec.containers = getContainerList(config)
@@ -372,12 +400,22 @@ chown -R ${runAsUser}:${fsGroup} ."""
 
         def includes, excludes
 
+        if (config.verbose) {
+            echo "stashIncludes config: ${config.stashIncludes}"
+            echo "stashExcludes config: ${config.stashExcludes}"
+        }
+
         if (stashBack) {
             includes = config.stashIncludes.stashBack ?: config.stashIncludes.workspace
             excludes = config.stashExcludes.stashBack ?: config.stashExcludes.workspace
         } else {
             includes = config.stashIncludes.workspace
             excludes = config.stashExcludes.workspace
+        }
+
+        if (config.verbose) {
+            echo "stash effective (includes): ${includes}"
+            echo "stash effective (excludes): ${excludes}"
         }
 
         stash(
@@ -387,6 +425,7 @@ chown -R ${runAsUser}:${fsGroup} ."""
             // 'true' by default due to negative side-effects, but can be overwritten via parameters
             // (as done by artifactPrepareVersion to preserve the .git folder)
             useDefaultExcludes: !config.stashNoDefaultExcludes,
+            allowEmpty: true
         )
         return stashName
     } catch (AbortException | IOException e) {
@@ -396,6 +435,10 @@ chown -R ${runAsUser}:${fsGroup} ."""
         throw e
     }
     return null
+}
+
+private Map getAnnotations(Map config){
+  return config.annotations ?: config.jenkinsKubernetes.annotations ?: [:]
 }
 
 private Map getAdditionalPodProperties(Map config) {
@@ -415,13 +458,14 @@ private Map getSecurityContext(Map config) {
 private void unstashWorkspace(config, prefix) {
     try {
         unstash "${prefix}-${config.uniqueId}"
-        echo "invalidate stash ${prefix}-${config.uniqueId}"
-        stash name: "${prefix}-${config.uniqueId}", excludes: '**/*', allowEmpty: true
     } catch (AbortException | IOException e) {
-        echo "${e.getMessage()}"
+        echo "${e.getMessage()}\n${e.getCause()}"
     } catch (Throwable e) {
         echo "Unstash workspace failed with throwable ${e.getMessage()}"
         throw e
+    } finally {
+        echo "invalidate stash ${prefix}-${config.uniqueId}"
+        stash name: "${prefix}-${config.uniqueId}", excludes: '**/*', allowEmpty: true
     }
 }
 

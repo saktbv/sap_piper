@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package helper
 
 import (
@@ -25,6 +28,13 @@ func configOpenFileMock(name string) (io.ReadCloser, error) {
 spec:
   outputs:
     resources:
+      - name: reports
+        type: reports
+        params:
+          - filePattern: "test-report_*.json"
+            subFolder: "sonarExecuteScan"
+          - filePattern: "report1"
+            type: general
       - name: commonPipelineEnvironment
         type: piperEnvironment
         params:
@@ -48,6 +58,8 @@ spec:
         type: stash
     params:
       - name: param0
+        aliases: 
+        - name: oldparam0
         type: string
         description: param0 description
         default: val0
@@ -56,20 +68,44 @@ spec:
         - PARAMETERS
         mandatory: true
       - name: param1
+        aliases: 
+        - name: oldparam1
+          deprecated: true
         type: string
         description: param1 description
         scope:
         - PARAMETERS
+        possibleValues:
+        - value1
+        - value2
+        - value3
+        deprecationMessage: use param3 instead
       - name: param2
         type: string
-        description: param1 description
+        description: param2 description
         scope:
         - PARAMETERS
-        mandatory: true
+        mandatoryIf:
+        - name: param1
+          value: value1
+      - name: param3
+        type: string
+        description: param3 description
+        scope:
+        - PARAMETERS
+        possibleValues:
+        - value1
+        - value2
+        - value3
+        mandatoryIf:
+        - name: param1
+          value: value1
+        - name: param2
+          value: value2
 `
 	var r string
 	switch name {
-	case "test.yaml":
+	case "testStep.yaml":
 		r = meta1
 	default:
 		r = ""
@@ -90,7 +126,7 @@ func writeFileMock(filename string, data []byte, perm os.FileMode) error {
 func TestProcessMetaFiles(t *testing.T) {
 
 	stepHelperData := StepHelperData{configOpenFileMock, writeFileMock, ""}
-	ProcessMetaFiles([]string{"test.yaml"}, "./cmd", stepHelperData)
+	ProcessMetaFiles([]string{"testStep.yaml"}, "./cmd", stepHelperData)
 
 	t.Run("step code", func(t *testing.T) {
 		goldenFilePath := filepath.Join("testdata", t.Name()+"_generated.golden")
@@ -115,7 +151,7 @@ func TestProcessMetaFiles(t *testing.T) {
 
 	t.Run("custom step code", func(t *testing.T) {
 		stepHelperData = StepHelperData{configOpenFileMock, writeFileMock, "piperOsCmd"}
-		ProcessMetaFiles([]string{"test.yaml"}, "./cmd", stepHelperData)
+		ProcessMetaFiles([]string{"testStep.yaml"}, "./cmd", stepHelperData)
 
 		goldenFilePath := filepath.Join("testdata", t.Name()+"_generated.golden")
 		expected, err := ioutil.ReadFile(goldenFilePath)
@@ -264,7 +300,7 @@ func TestGolangNameTitle(t *testing.T) {
 	}
 
 	for k, v := range tt {
-		assert.Equal(t, v.expected, golangNameTitle(v.input), fmt.Sprintf("wrong golang name for run %v", k))
+		assert.Equal(t, v.expected, GolangNameTitle(v.input), fmt.Sprintf("wrong golang name for run %v", k))
 	}
 }
 

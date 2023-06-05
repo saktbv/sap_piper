@@ -34,8 +34,7 @@ func (c *ClMock) SetOptions(opts piperhttp.ClientOptions) {}
 // SendRequest : BF Send Fake request
 func (c *ClMock) SendRequest(method string, url string, bdy io.Reader, hdr http.Header, cookies []*http.Cookie) (*http.Response, error) {
 	if method == "GET" || method == "POST" {
-		var body []byte
-		body = []byte(fakeResponse(method, url))
+		body := []byte(fakeResponse(method, url))
 		return &http.Response{
 			StatusCode: c.StatusCode,
 			Body:       ioutil.NopCloser(bytes.NewReader(body)),
@@ -343,3 +342,44 @@ var responseGetValues = `{
 		]
 	}
 }`
+
+func GetMockBuildTestDownloadPublish() Build {
+	conn := new(Connector)
+	conn.DownloadClient = &DownloadClientMock{}
+
+	results0 := []Result{
+		{
+			connector: *conn,
+			Name:      dummyResultName,
+		},
+	}
+	results1 := []Result{
+		{
+			connector: *conn,
+			Name:      "File1",
+		},
+		{
+			connector: *conn,
+			Name:      "File2",
+		},
+		{
+			connector: *conn,
+			Name:      "File3",
+		},
+	}
+
+	build := Build{
+		BuildID: "123",
+		Tasks: []task{
+			{
+				TaskID:  0,
+				Results: results0,
+			},
+			{
+				TaskID:  1,
+				Results: results1,
+			},
+		},
+	}
+	return build
+}

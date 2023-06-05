@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
@@ -22,6 +25,8 @@ func mockReader(path string) ([]byte, error) {
 
 func TestRegisterPackagesStep(t *testing.T) {
 	var config abapAddonAssemblyKitRegisterPackagesOptions
+	config.Username = "dummy"
+	config.Password = "dummy"
 	var cpe abapAddonAssemblyKitRegisterPackagesCommonPipelineEnvironment
 	t.Run("step success", func(t *testing.T) {
 		client := &abaputils.ClientMock{
@@ -46,7 +51,8 @@ func TestRegisterPackagesStep(t *testing.T) {
 
 		assert.NoError(t, err, "Did not expect error")
 		var addonDescriptorFinal abaputils.AddonDescriptor
-		json.Unmarshal([]byte(cpe.abap.addonDescriptor), &addonDescriptorFinal)
+		err = json.Unmarshal([]byte(cpe.abap.addonDescriptor), &addonDescriptorFinal)
+		assert.NoError(t, err)
 		assert.Equal(t, "L", addonDescriptorFinal.Repositories[0].Status)
 	})
 	t.Run("step error - null file", func(t *testing.T) {

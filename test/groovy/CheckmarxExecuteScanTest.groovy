@@ -54,7 +54,8 @@ class CheckmarxExecuteScanTest extends BasePiperTest {
             return closure()
         })
         credentialsRule.withCredentials('idOfCxCredential', "PIPER_username", "PIPER_password")
-        shellCallRule.setReturnValue('./piper getConfig --contextConfig --stepMetadata \'.pipeline/tmp/metadata/checkmarx.yaml\'', '{"checkmarxCredentialsId": "idOfCxCredential", "verbose": false}')
+        shellCallRule.setReturnValue('[ -x ./piper ]', 1)
+        shellCallRule.setReturnValue('./piper getConfig --contextConfig --stepMetadata \'.pipeline/tmp/metadata/checkmarxExecuteScan.yaml\'', '{"checkmarxCredentialsId": "idOfCxCredential", "verbose": false}')
 
         helper.registerAllowedMethod('findFiles', [Map.class], {return null})
         helper.registerAllowedMethod("writePipelineEnv", [Map.class], {m -> return })
@@ -70,9 +71,9 @@ class CheckmarxExecuteScanTest extends BasePiperTest {
             script: nullScript
         )
         // asserts
-        assertThat(writeFileRule.files['.pipeline/tmp/metadata/checkmarx.yaml'], containsString('name: checkmarxExecuteScan'))
+        assertThat(writeFileRule.files['.pipeline/tmp/metadata/checkmarxExecuteScan.yaml'], containsString('name: checkmarxExecuteScan'))
         assertThat(withEnvArgs[0], allOf(startsWith('PIPER_parametersJSON'), containsString('"testParam":"This is test content"')))
-        assertThat(shellCallRule.shell[1], is('./piper checkmarxExecuteScan'))
+        assertThat(shellCallRule.shell[2], is('./piper checkmarxExecuteScan'))
     }
 
     @Test

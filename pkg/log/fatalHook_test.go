@@ -1,8 +1,10 @@
+//go:build unit
+// +build unit
+
 package log
 
 import (
 	"io/ioutil"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -16,12 +18,7 @@ func TestFatalHookLevels(t *testing.T) {
 }
 
 func TestFatalHookFire(t *testing.T) {
-	workspace, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Fatal("Failed to create temporary workspace directory")
-	}
-	// clean up tmp dir
-	defer os.RemoveAll(workspace)
+	workspace := t.TempDir()
 
 	t.Run("with step name", func(t *testing.T) {
 		hook := FatalHook{

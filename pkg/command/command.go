@@ -18,6 +18,7 @@ import (
 // Command defines the information required for executing a call to any executable
 type Command struct {
 	ErrorCategoryMapping map[string][]string
+	StepName             string
 	dir                  string
 	stdin                io.Reader
 	stdout               io.Writer
@@ -65,6 +66,10 @@ func (c *Command) AppendEnv(env []string) {
 	c.env = append(c.env, env...)
 }
 
+func (c *Command) GetOsEnv() []string {
+	return os.Environ()
+}
+
 // Stdin ..
 func (c *Command) Stdin(stdin io.Reader) {
 	c.stdin = stdin
@@ -85,7 +90,7 @@ func (c *Command) GetStdout() io.Writer {
 	return c.stdout
 }
 
-//GetStderr Retursn the writer for stderr
+// GetStderr Retursn the writer for stderr
 func (c *Command) GetStderr() io.Writer {
 	return c.stderr
 }
@@ -95,7 +100,6 @@ var ExecCommand = exec.Command
 
 // RunShell runs the specified command on the shell
 func (c *Command) RunShell(shell, script string) error {
-
 	c.prepareOut()
 
 	cmd := ExecCommand(shell)
@@ -120,9 +124,9 @@ func (c *Command) RunShell(shell, script string) error {
 
 // RunExecutable runs the specified executable with parameters
 // !! While the cmd.Env is applied during command execution, it is NOT involved when the actual executable is resolved.
-//    Thus the executable needs to be on the PATH of the current process and it is not sufficient to alter the PATH on cmd.Env.
+//
+//	Thus the executable needs to be on the PATH of the current process and it is not sufficient to alter the PATH on cmd.Env.
 func (c *Command) RunExecutable(executable string, params ...string) error {
-
 	c.prepareOut()
 
 	cmd := ExecCommand(executable, params...)
@@ -147,9 +151,9 @@ func (c *Command) RunExecutable(executable string, params ...string) error {
 
 // RunExecutableInBackground runs the specified executable with parameters in the background non blocking
 // !! While the cmd.Env is applied during command execution, it is NOT involved when the actual executable is resolved.
-//    Thus the executable needs to be on the PATH of the current process and it is not sufficient to alter the PATH on cmd.Env.
+//
+//	Thus the executable needs to be on the PATH of the current process and it is not sufficient to alter the PATH on cmd.Env.
 func (c *Command) RunExecutableInBackground(executable string, params ...string) (Execution, error) {
-
 	c.prepareOut()
 
 	cmd := ExecCommand(executable, params...)
@@ -167,7 +171,6 @@ func (c *Command) RunExecutableInBackground(executable string, params ...string)
 	}
 
 	execution, err := c.startCmd(cmd)
-
 	if err != nil {
 		return nil, errors.Wrapf(err, "starting command '%v' failed", executable)
 	}
@@ -181,7 +184,6 @@ func (c *Command) GetExitCode() int {
 }
 
 func appendEnvironment(cmd *exec.Cmd, env []string) {
-
 	if len(env) > 0 {
 
 		// When cmd.Env is nil the environment variables from the current
@@ -208,9 +210,7 @@ func appendEnvironment(cmd *exec.Cmd, env []string) {
 }
 
 func (c *Command) startCmd(cmd *exec.Cmd) (*execution, error) {
-
 	stdout, stderr, err := cmdPipes(cmd)
-
 	if err != nil {
 		return nil, errors.Wrap(err, "getting command pipes failed")
 	}
@@ -220,7 +220,7 @@ func (c *Command) startCmd(cmd *exec.Cmd) (*execution, error) {
 		return nil, errors.Wrap(err, "starting command failed")
 	}
 
-	execution := execution{cmd: cmd}
+	execution := execution{cmd: cmd, ul: log.NewURLLogger(c.StepName)}
 	execution.wg.Add(2)
 
 	srcOut := stdout
@@ -251,12 +251,28 @@ func (c *Command) startCmd(cmd *exec.Cmd) (*execution, error) {
 	}
 
 	go func() {
-		_, execution.errCopyStdout = piperutils.CopyData(c.stdout, srcOut)
+		if c.StepName != "" {
+			var buf bytes.Buffer
+			br := bufio.NewWriter(&buf)
+			_, execution.errCopyStdout = piperutils.CopyData(io.MultiWriter(c.stdout, br), srcOut)
+			br.Flush()
+			execution.ul.Parse(buf)
+		} else {
+			_, execution.errCopyStdout = piperutils.CopyData(c.stdout, srcOut)
+		}
 		execution.wg.Done()
 	}()
 
 	go func() {
-		_, execution.errCopyStderr = piperutils.CopyData(c.stderr, srcErr)
+		if c.StepName != "" {
+			var buf bytes.Buffer
+			bw := bufio.NewWriter(&buf)
+			_, execution.errCopyStderr = piperutils.CopyData(io.MultiWriter(c.stderr, bw), srcErr)
+			bw.Flush()
+			execution.ul.Parse(buf)
+		} else {
+			_, execution.errCopyStderr = piperutils.CopyData(c.stderr, srcErr)
+		}
 		execution.wg.Done()
 	}()
 
@@ -325,7 +341,6 @@ func matchPattern(text, pattern string) bool {
 }
 
 func (c *Command) runCmd(cmd *exec.Cmd) error {
-
 	execution, err := c.startCmd(cmd)
 	if err != nil {
 		return err
@@ -353,10 +368,9 @@ func (c *Command) runCmd(cmd *exec.Cmd) error {
 }
 
 func (c *Command) prepareOut() {
-
-	//ToDo: check use of multiwriter instead to always write into os.Stdout and os.Stdin?
-	//stdout := io.MultiWriter(os.Stdout, &stdoutBuf)
-	//stderr := io.MultiWriter(os.Stderr, &stderrBuf)
+	// ToDo: check use of multiwriter instead to always write into os.Stdout and os.Stdin?
+	// stdout := io.MultiWriter(os.Stdout, &stdoutBuf)
+	// stderr := io.MultiWriter(os.Stderr, &stderrBuf)
 
 	if c.stdout == nil {
 		c.stdout = os.Stdout

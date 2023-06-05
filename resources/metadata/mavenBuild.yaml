@@ -8,6 +8,43 @@ metadata:
     This step will install the maven project into the local maven repository.
     It will also prepare jacoco to record the code coverage and
     supports ci friendly versioning by flattening the pom before installing.
+
+    ### build with depedencies from a private repository
+    if your build has dependencies from a private repository you can include a project settings xml into the source code repository as below (replace the `<url>`
+    tag with a valid private repo url).
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+      <servers>
+        <server>
+            <id>private.repo.id</id>
+            <username>${env.PIPER_VAULTCREDENTIAL_USERNAME}</username>
+            <password>${env.PIPER_VAULTCREDENTIAL_PASSWORD}</password>
+        </server>
+      </servers>
+    </settings>
+    ```
+    `PIPER_VAULTCREDENTIAL_USERNAME` and `PIPER_VAULTCREDENTIAL_PASSWORD` are the username and password for the private repository and are exposed as environment variables that must be present
+    in the environment where the Piper step runs or alternatively can be created using :
+    [vault general purpose credentials](../infrastructure/vault.md#using-vault-for-general-purpose-and-test-credentials)
+
+    include the below `<repositories>` tag in your `pom.xml` to reference the `<server>` and make sure the values in the `<id>` tags match
+    ```xml
+    <repositories>
+        <repository>
+          <id>private.repo.id</id>
+          <url>https://private.repo.com/</url>
+        </repository>
+    </repositories>
+    ```
+
+    Ensure the following configuration in the Piper `config.yaml` to ensure the above settings xml is included and all steps can consume this parameter:
+
+    ```yaml
+    general:
+      projectSettingsFile: <path to the above settings.xml>
+    ```
 spec:
   inputs:
     secrets:
@@ -20,6 +57,7 @@ spec:
         description: Path to the pom file which should be installed including all children.
         scope:
           - PARAMETERS
+          - STAGES
           - STEPS
         mandatory: false
         default: pom.xml
@@ -36,6 +74,7 @@ spec:
         description: Defines if the pom files should be flattened to support ci friendly maven versioning.
         scope:
           - PARAMETERS
+          - STEPS
         default: true
       - name: verify
         type: bool
@@ -111,14 +150,14 @@ spec:
         secret: true
         resourceRef:
           - name: commonPipelineEnvironment
+            param: custom/mavenRepositoryPassword
+          - name: commonPipelineEnvironment
             param: custom/repositoryPassword
           - name: altDeploymentRepositoryPasswordId
             type: secret
           - type: vaultSecretFile
-            paths:
-              - $(vaultPath)/alt-deployment-repository-passowrd
-              - $(vaultBasePath)/$(vaultPipelineName)/alt-deployment-repository-passowrd
-              - $(vaultBasePath)/GROUP-SECRETS/alt-deployment-repository-passowrd
+            name: altDeploymentRepositoryPasswordFileVaultSecretName
+            default: alt-deployment-repository-passowrd
       - name: altDeploymentRepositoryUser
         type: string
         description: User for the alternative deployment repository to which the project artifacts should be deployed ( other than those specified in <distributionManagement> ). This user will be updated in settings.xml . When no settings.xml is provided a new one is created corresponding with <servers> tag
@@ -128,6 +167,8 @@ spec:
           - STAGES
           - STEPS
         resourceRef:
+          - name: commonPipelineEnvironment
+            param: custom/mavenRepositoryUsername
           - name: commonPipelineEnvironment
             param: custom/repositoryUsername
       - name: altDeploymentRepositoryUrl
@@ -139,6 +180,8 @@ spec:
           - STAGES
           - STEPS
         resourceRef:
+          - name: commonPipelineEnvironment
+            param: custom/mavenRepositoryURL
           - name: commonPipelineEnvironment
             param: custom/repositoryUrl
       - name: altDeploymentRepositoryID
@@ -169,6 +212,40 @@ spec:
         default: false
         aliases:
           - name: maven/publish
+      - name: javaCaCertFilePath
+        type: string
+        description: path to the cacerts file used by Java. When maven publish is set to True and customTlsCertificateLinks (to deploy the artifact to a repository with a self signed cert) are provided to trust the self signed certs, Piper will extend the existing Java cacerts to include the new self signed certs. if not provided Piper will search for the cacerts in $JAVA_HOME/jre/lib/security/cacerts
+        scope:
+          - STEPS
+          - STAGES
+          - PARAMETERS
+        aliases:
+          - name: maven/javaCaCertFilePath
+      - name: buildSettingsInfo
+        type: string
+        description: build settings info is typically filled by the step automatically to create information about the build settings that were used during the maven build . This information is typically used for compliance related processes.
+        scope:
+          - STEPS
+          - STAGES
+          - PARAMETERS
+        resourceRef:
+          - name: commonPipelineEnvironment
+            param: custom/buildSettingsInfo
+  outputs:
+    resources:
+      - name: commonPipelineEnvironment
+        type: piperEnvironment
+        params:
+          - name: custom/buildSettingsInfo
+      - name: reports
+        type: reports
+        params:
+          - filePattern: "**/bom-maven.xml"
+            type: sbom
+          - filePattern: "**/TEST-*.xml"
+            type: junit
+          - filePattern: "**/jacoco.xml"
+            type: jacoco-coverage
   containers:
     - name: mvn
       image: maven:3.6-jdk-8

@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -16,10 +17,13 @@ import (
 
 // Connector : Connector Utility Wrapping http client
 type Connector struct {
-	Client         piperhttp.Sender
-	DownloadClient piperhttp.Downloader
-	Header         map[string][]string
-	Baseurl        string
+	Client          piperhttp.Sender
+	DownloadClient  piperhttp.Downloader
+	Header          map[string][]string
+	Baseurl         string
+	Parameters      url.Values
+	MaxRuntime      time.Duration // just as handover parameter for polling functions
+	PollingInterval time.Duration // just as handover parameter for polling functions
 }
 
 // ConnectorConfiguration : Handover Structure for Connector Creation
@@ -34,6 +38,8 @@ type ConnectorConfiguration struct {
 	Password            string
 	AddonDescriptor     string
 	MaxRuntimeInMinutes int
+	CertificateNames    []string
+	Parameters          url.Values
 }
 
 // HTTPSendLoader : combine both interfaces [sender, downloader]
@@ -46,7 +52,7 @@ type HTTPSendLoader interface {
 
 // GetToken : Get the X-CRSF Token from ABAP Backend for later post
 func (conn *Connector) GetToken(appendum string) error {
-	url := conn.Baseurl + appendum
+	url := conn.createUrl(appendum)
 	conn.Header["X-CSRF-Token"] = []string{"Fetch"}
 	response, err := conn.Client.SendRequest("HEAD", url, nil, conn.Header, nil)
 	if err != nil {
@@ -66,7 +72,7 @@ func (conn *Connector) GetToken(appendum string) error {
 
 // Get : http get request
 func (conn Connector) Get(appendum string) ([]byte, error) {
-	url := conn.Baseurl + appendum
+	url := conn.createUrl(appendum)
 	response, err := conn.Client.SendRequest("GET", url, nil, conn.Header, nil)
 	if err != nil {
 		if response == nil || response.Body == nil {
@@ -84,7 +90,7 @@ func (conn Connector) Get(appendum string) ([]byte, error) {
 
 // Post : http post request
 func (conn Connector) Post(appendum string, importBody string) ([]byte, error) {
-	url := conn.Baseurl + appendum
+	url := conn.createUrl(appendum)
 	var response *http.Response
 	var err error
 	if importBody == "" {
@@ -108,13 +114,23 @@ func (conn Connector) Post(appendum string, importBody string) ([]byte, error) {
 
 // Download : download a file via http
 func (conn Connector) Download(appendum string, downloadPath string) error {
-	url := conn.Baseurl + appendum
+	url := conn.createUrl(appendum)
 	err := conn.DownloadClient.DownloadFile(url, downloadPath, nil, nil)
 	return err
 }
 
+// create url
+func (conn Connector) createUrl(appendum string) string {
+	myUrl := conn.Baseurl + appendum
+	if len(conn.Parameters) == 0 {
+		return myUrl
+	}
+	myUrl = myUrl + "?" + conn.Parameters.Encode()
+	return myUrl
+}
+
 // InitAAKaaS : initialize Connector for communication with AAKaaS backend
-func (conn *Connector) InitAAKaaS(aAKaaSEndpoint string, username string, password string, inputclient piperhttp.Sender) {
+func (conn *Connector) InitAAKaaS(aAKaaSEndpoint string, username string, password string, inputclient piperhttp.Sender) error {
 	conn.Client = inputclient
 	conn.Header = make(map[string][]string)
 	conn.Header["Accept"] = []string{"application/json"}
@@ -128,6 +144,12 @@ func (conn *Connector) InitAAKaaS(aAKaaSEndpoint string, username string, passwo
 		CookieJar: cookieJar,
 	})
 	conn.Baseurl = aAKaaSEndpoint
+
+	if username == "" || password == "" {
+		return errors.New("username/password for AAKaaS must not be initial") //leads to redirect to login page which causes HTTP200 instead of HTTP401 and thus side effects
+	} else {
+		return nil
+	}
 }
 
 // InitBuildFramework : initialize Connector for communication with ABAP SCP instance
@@ -162,18 +184,20 @@ func (conn *Connector) InitBuildFramework(config ConnectorConfiguration, com aba
 	})
 	cookieJar, _ := cookiejar.New(nil)
 	conn.Client.SetOptions(piperhttp.ClientOptions{
-		Username:  connectionDetails.User,
-		Password:  connectionDetails.Password,
-		CookieJar: cookieJar,
+		Username:     connectionDetails.User,
+		Password:     connectionDetails.Password,
+		CookieJar:    cookieJar,
+		TrustedCerts: config.CertificateNames,
 	})
 	conn.Baseurl = connectionDetails.URL
+	conn.Parameters = config.Parameters
 
 	return nil
 }
 
 // UploadSarFile : upload *.sar file
 func (conn Connector) UploadSarFile(appendum string, sarFile []byte) error {
-	url := conn.Baseurl + appendum
+	url := conn.createUrl(appendum)
 	response, err := conn.Client.SendRequest("PUT", url, bytes.NewBuffer(sarFile), conn.Header, nil)
 	if err != nil {
 		defer response.Body.Close()
@@ -189,7 +213,7 @@ func (conn Connector) UploadSarFileInChunks(appendum string, fileName string, sa
 	//Maybe Next Refactoring step to read the file in chunks, too?
 	//In case it turns out to be not reliable add a retry mechanism
 
-	url := conn.Baseurl + appendum
+	url := conn.createUrl(appendum)
 
 	header := make(map[string][]string)
 	header["Content-Disposition"] = []string{"form-data; name=\"file\"; filename=\"" + fileName + "\""}
@@ -211,9 +235,13 @@ func (conn Connector) UploadSarFileInChunks(appendum string, fileName string, sa
 
 		response, err := conn.Client.SendRequest("POST", url, nextChunk, header, nil)
 		if err != nil {
-			errorbody, _ := ioutil.ReadAll(response.Body)
-			response.Body.Close()
-			return errors.Wrapf(err, "Upload of SAR file failed: %v", string(errorbody))
+			if response != nil && response.Body != nil {
+				errorbody, _ := ioutil.ReadAll(response.Body)
+				response.Body.Close()
+				return errors.Wrapf(err, "Upload of SAR file failed: %v", string(errorbody))
+			} else {
+				return err
+			}
 		}
 
 		response.Body.Close()

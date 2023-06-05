@@ -2,6 +2,7 @@ package piperenv
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func SetResourceParameter(path, resourceName, paramName string, value interface{
 
 // GetResourceParameter reads a resource parameter from the environment stored in the file system
 func GetResourceParameter(path, resourceName, paramName string) string {
-	//TODO: align JSON un/marshalling, currently done in pkg/congif/stepmeta.go#getParameterValue
+	//TODO: align JSON un/marshalling, currently done in pkg/config/stepmeta.go#getParameterValue
 
 	paramPath := filepath.Join(path, resourceName, paramName)
 	return readFromDisk(paramPath)
@@ -56,7 +57,10 @@ func writeToDisk(filename string, data []byte) error {
 
 	if _, err := os.Stat(filepath.Dir(filename)); os.IsNotExist(err) {
 		log.Entry().Debugf("Creating directory: %v", filepath.Dir(filename))
-		os.MkdirAll(filepath.Dir(filename), 0777)
+		cErr := os.MkdirAll(filepath.Dir(filename), 0777)
+		if cErr != nil {
+			return fmt.Errorf("failed to create directory %v, %w", filepath.Dir(filename), cErr)
+		}
 	}
 
 	//ToDo: make sure to not overwrite file but rather add another file? Create error if already existing?

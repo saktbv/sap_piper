@@ -22,7 +22,7 @@ metadata:
 
     * `yourRegistry` will be retrieved from `containerRegistryUrl`
     * `yourImageName`, `yourImageTag` will be retrieved from `image`
-    * `dockerSecret` will be calculated with a call to `kubectl create secret docker-registry regsecret --docker-server=<yourRegistry> --docker-username=<containerRegistryUser> --docker-password=<containerRegistryPassword> --dry-run=true --output=json'`
+    * `dockerSecret` will be calculated with a call to `kubectl create secret generic <containerRegistrySecret> --from-file=.dockerconfigjson=<dockerConfigJson> --type=kubernetes.io/dockerconfigjson --insecure-skip-tls-verify=true --dry-run=client --output=json`
 spec:
   inputs:
     secrets:
@@ -43,15 +43,20 @@ spec:
       - name: dockerConfigJsonCredentialsId
         description: Jenkins 'Secret file' credentials ID containing Docker config.json (with registry credential(s)).
         type: jenkins
+      - name: githubTokenCredentialsId
+        description: Jenkins credentials ID containing the github token.
+        type: jenkins
     resources:
       - name: deployDescriptor
+        type: stash
+      - name: downloadedArtifact
         type: stash
     params:
       - name: additionalParameters
         aliases:
           - name: helmDeploymentParameters
         type: "[]string"
-        description: Defines additional parameters for \"helm install\" or \"kubectl apply\" command.
+        description: Defines additional parameters for "helm install" or "kubectl apply" command.
         scope:
           - PARAMETERS
           - STAGES
@@ -70,7 +75,58 @@ spec:
         aliases:
           - name: k8sAppTemplate
         type: string
-        description: Defines the filename for the kubernetes app template (e.g. k8s_apptemplate.yaml)
+        description: Defines the filename for the kubernetes app template (e.g. k8s_apptemplate.yaml).
+        longDescription: |
+          There are two supported ways for the template rendering:
+
+          1. For a deployments using single image, you can use a placeholder `<image-name>`, which will be replaced with the image GUN.
+          ```
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: app
+            labels:
+              app: app
+          spec:
+            replicas: 3
+            selector:
+              matchLabels:
+                app: app
+            template:
+              metadata:
+                labels:
+                  app: app
+              spec:
+                containers:
+                - name: app
+                  image: <image-name>
+          ```
+
+          2. Helm styled templates, with the support for multi-image deployments.
+
+          ```
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: app
+            labels:
+              app: app
+          spec:
+            replicas: 3
+            selector:
+              matchLabels:
+                app: app
+            template:
+              metadata:
+                labels:
+                  app: app
+              spec:
+                containers:
+                - name: app-1
+                  image: "{{ .Values.image.repository}}:{{ .Values.image.tag }}"
+                - name: app-2
+                  image: "{{ .Values.image.app_2.repository}}:{{ .Values.image.app_2.tag }}"
+          ```
         scope:
           - PARAMETERS
           - STAGES
@@ -84,6 +140,9 @@ spec:
           - PARAMETERS
           - STAGES
           - STEPS
+        resourceRef:
+          - name: commonPipelineEnvironment
+            param: custom/localHelmChartPath
       - name: containerRegistryPassword
         description: Password for container registry access - typically provided by the CI/CD environment.
         type: string
@@ -96,6 +155,33 @@ spec:
           - name: dockerCredentialsId
             type: secret
             param: password
+          - name: commonPipelineEnvironment
+            param: container/repositoryPassword
+          - name: commonPipelineEnvironment
+            param: custom/repositoryPassword
+      - name: containerImageName
+        aliases:
+          - name: dockerImageName
+        type: string
+        description: Name of the container which will be built - will be used together with `containerImageTag` instead of parameter `containerImage`
+        scope:
+          - GENERAL
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: containerImageTag
+        aliases:
+          - name: artifactVersion
+        type: string
+        description: Tag of the container which will be built - will be used together with `containerImageName` instead of parameter `containerImage`
+        scope:
+          - GENERAL
+          - PARAMETERS
+          - STAGES
+          - STEPS
+        resourceRef:
+          - name: commonPipelineEnvironment
+            param: artifactVersion
       - name: containerRegistryUrl
         aliases:
           - name: dockerRegistryUrl
@@ -122,6 +208,10 @@ spec:
           - name: dockerCredentialsId
             type: secret
             param: username
+          - name: commonPipelineEnvironment
+            param: container/repositoryUsername
+          - name: commonPipelineEnvironment
+            param: custom/repositoryUsername
       - name: containerRegistrySecret
         description: Name of the container registry secret used for pulling containers from the registry.
         longDescription: |-
@@ -129,12 +219,11 @@ spec:
 
           **For `deployTool: helm/helm3`:**<br />
           If `containerRegistryUser` and `containerRegistryPassword` are provided, a secret is created on the fly and the information is passed to the helm template.<br />
-          Note: the secret will not be persisted in the Kubernetes cluster.
-
-          If neither `containerRegistryUser` nor `containerRegistryPassword` are provided, it is expected that a secret with the configured name exists in the target Kubernetes cluster.<br />
 
           **For `deployTool: kubectl`:**<br />
-          If `createDockerRegistrySecret: true` and `containerRegistryUser` and `containerRegistryPassword` are provided, a secret with the given name will be created in the Kubernetes cluster unless a secret with the name already exists.
+          If `containerRegistryUser` and `containerRegistryPassword` are provided, a secret with the given name will be created in the Kubernetes cluster.
+
+          If neither `containerRegistryUser` nor `containerRegistryPassword` are provided, it is expected that a secret with the configured name exists in the target Kubernetes cluster.<br />
         type: string
         scope:
           - PARAMETERS
@@ -172,8 +261,10 @@ spec:
           - helm
           - helm3
       - name: forceUpdates
+        aliases:
+          - name: force
         type: bool
-        description: "Helm only: force resource updates with helm parameter `--force`"
+        description: "Adds `--force` flag to a helm resource update command or to a kubectl replace command"
         mandatory: false
         scope:
           - PARAMETERS
@@ -188,6 +279,14 @@ spec:
           - STAGES
           - STEPS
         default: 300
+      - name: helmTestWaitSeconds
+        type: int
+        description: Number of seconds to wait for any individual Kubernetes operation (like Jobs for hooks). See https://helm.sh/docs/helm/helm_test/#options for further details
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+        default: 300
       - name: helmValues
         type: "[]string"
         description: List of helm values as YAML file reference or URL (as per helm parameter description for `-f` / `--values`)
@@ -195,15 +294,88 @@ spec:
           - PARAMETERS
           - STAGES
           - STEPS
+      - name: valuesMapping
+        type: "map[string]interface{}"
+        longDescription: |
+          Mapping of values provided by Piper onto custom paths in format `[custom-path]: [piper-value]`
+
+          Example:
+          ```yaml
+          valuesMapping:
+            subchart.image.tag:        image.debug.tag
+            subchart.image.repository: image.debug.repository
+            subchart.image.pullsecret: secret.dockerconfigjson
+          ```
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: renderSubchartNotes
+        type: bool
+        description: If set, render subchart notes along with the parent.
+        default: true
+        scope:
+          - GENERAL
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: githubToken
+        description: "GitHub personal access token as per
+          https://help.github.com/en/github/authenticating-to-github/creating-a-personal-access-token-for-the-command-line"
+        scope:
+          - GENERAL
+          - PARAMETERS
+          - STAGES
+          - STEPS
+        type: string
+        secret: true
+        aliases:
+          - name: access_token
+        resourceRef:
+          - name: githubTokenCredentialsId
+            type: secret
+          - type: vaultSecret
+            default: github
+            name: githubVaultSecretName
       - name: image
         aliases:
           - name: deployImage
         type: string
         description: Full name of the image to be deployed.
+        deprecationMessage: This parameter is deprecated, please use [containerImageName](#containerimagename) and [containerImageTag](#containerimagetag)
         resourceRef:
           - name: commonPipelineEnvironment
             param: container/imageNameTag
-        mandatory: true
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: imageNames
+        type: "[]string"
+        description: List of names of the images to be deployed.
+        resourceRef:
+          - name: commonPipelineEnvironment
+            param: container/imageNames
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: imageNameTags
+        type: "[]string"
+        description: List of full names (registry and tag) of the images to be deployed.
+        resourceRef:
+          - name: commonPipelineEnvironment
+            param: container/imageNameTags
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: imageDigests
+        type: "[]string"
+        description: List of image digests of the images to be deployed, in the format `sha256:<hash>`. If provided, image digests will be appended to the image tag, e.g. `<repository>/<name>:<tag>@<digest>`
+        resourceRef:
+          - name: commonPipelineEnvironment
+            param: container/imageDigests
         scope:
           - PARAMETERS
           - STAGES
@@ -232,9 +404,27 @@ spec:
           - PARAMETERS
           - STAGES
           - STEPS
+      - name: runHelmTests
+        type: bool
+        description: Defines whether or not to run helm tests against the recently deployed release
+        default: false
+        scope:
+          - GENERAL
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: showTestLogs
+        type: bool
+        description: Defines whether to print the pod logs after running helm tests
+        default: false
+        scope:
+          - GENERAL
+          - PARAMETERS
+          - STAGES
+          - STEPS
       - name: kubeConfig
         type: string
-        description: Defines the path to the \"kubeconfig\" file.
+        description: Defines the path to the "kubeconfig" file.
         scope:
           - GENERAL
           - PARAMETERS
@@ -245,13 +435,11 @@ spec:
           - name: kubeConfigFileCredentialsId
             type: secret
           - type: vaultSecretFile
-            paths:
-              - $(vaultPath)/kube-config
-              - $(vaultBasePath)/$(vaultPipelineName)/kube-config
-              - $(vaultBasePath)/GROUP-SECRETS/kube-config
+            name: kubeConfigFileVaultSecretName
+            default: kube-config
       - name: kubeContext
         type: string
-        description: Defines the context to use from the \"kubeconfig\" file.
+        description: Defines the context to use from the "kubeconfig" file.
         scope:
           - PARAMETERS
           - STAGES
@@ -293,19 +481,65 @@ spec:
         description: Path to the file `.docker/config.json` - this is typically provided by your CI/CD system. You can find more details about the Docker credentials in the [Docker documentation](https://docs.docker.com/engine/reference/commandline/login/).
         scope:
           - PARAMETERS
+          - STAGES
+          - STEPS
         secret: true
+        default: '.pipeline/docker/config.json'
         resourceRef:
-          - name: commonPipelineEnvironment
-            param: custom/dockerConfigJSON
           - name: dockerConfigJsonCredentialsId
             type: secret
           - type: vaultSecretFile
-            paths:
-              - $(vaultPath)/docker-config
-              - $(vaultBasePath)/$(vaultPipelineName)/docker-config
-              - $(vaultBasePath)/GROUP-SECRETS/docker-config
+            name: dockerConfigFileVaultSecretName
+            default: docker-config
+      - name: deployCommand
+        type: string
+        description: "Only for `deployTool: kubectl`: defines the command `apply` or `replace`. The default is `apply`."
+        mandatory: false
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+        default: apply
+        possibleValues:
+          - apply
+          - replace
+      - name: setupScript
+        type: string
+        description: HTTP location of setup script
+        longDescription: |
+          For helm-based deploymens only!
+          HTTP location of setup script.
+          The script will be downloaded from a GitHub location using the `githubToken` and executed before the installation of the helm package.
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: verificationScript
+        type: string
+        description: HTTP location of verification script
+        longDescription: |
+          For helm-based deploymens only!
+          HTTP location of verification script.
+          The script will be downloaded from a GitHub location using the `githubToken` and executed after installation of the helm package.
+          It can be used to verify if all required artifacts are ready before progressing with for example `helmTest` using the step option `runHelmTests: true`
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+      - name: teardownScript
+        type: string
+        description: HTTP location of teardown script
+        longDescription: |
+          For helm-based deploymens only!
+          HTTP location of setup script.
+          The script will be downloaded from a GitHub location using the `githubToken` and executed at the end of the step.
+          This can for example be used in order to remove a temporary namespace which was created for the test.
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
   containers:
-    - image: dtzar/helm-kubectl:3.4.1
+    - image: dtzar/helm-kubectl:3
       workingDir: /config
       options:
         - name: -u
@@ -315,7 +549,7 @@ spec:
           params:
             - name: deployTool
               value: helm3
-    - image: dtzar/helm-kubectl:2.12.1
+    - image: dtzar/helm-kubectl:2.17.0
       workingDir: /config
       options:
         - name: -u
@@ -325,7 +559,7 @@ spec:
           params:
             - name: deployTool
               value: helm
-    - image: dtzar/helm-kubectl:2.12.1
+    - image: dtzar/helm-kubectl:2.17.0
       workingDir: /config
       options:
         - name: -u

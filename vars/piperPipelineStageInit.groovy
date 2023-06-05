@@ -35,7 +35,7 @@ import static com.sap.piper.Prerequisites.checkScript
      */
     'legacyConfigSettings',
     /**
-     * Defines the main branch for your pipeline. **Typically this is the `master` branch, which does not need to be set explicitly.** Only change this in exceptional cases
+     * Defines the main branch for your pipeline. **Typically this is the `master` branch, which does not need to be set explicitly.** Only change this in exceptional cases to a fixed branch name.
      */
     'productiveBranch',
     /**
@@ -56,12 +56,27 @@ import static com.sap.piper.Prerequisites.checkScript
      */
     'stashSettings',
     /**
+    * Works as the stashSettings parameter, but allows the use of a stash settings file that is not available as a library resource.
+    */
+    'customStashSettings',
+    /**
      * Whether verbose output should be produced.
      * @possibleValues `true`, `false`
      */
     'verbose'
 ]
-@Field STAGE_STEP_KEYS = []
+@Field STAGE_STEP_KEYS = [
+    /**
+     * Sets the build version.
+     * @possibleValues `true`, `false`
+     */
+    'artifactPrepareVersion',
+    /**
+     * Retrieve transport request from git commit history.
+     * @possibleValues `true`, `false`
+     */
+    'transportRequestReqIDFromGit'
+]
 @Field Set STEP_CONFIG_KEYS = GENERAL_CONFIG_KEYS.plus(STAGE_STEP_KEYS)
 @Field Set PARAMETER_KEYS = STEP_CONFIG_KEYS.plus([
     /**
@@ -84,6 +99,10 @@ import static com.sap.piper.Prerequisites.checkScript
      * @possibleValues `true`, `false`
      */
     'skipCheckout',
+    /**
+    * Mandatory if you skip the checkout. Then you need to unstash your workspace to get the e.g. configuration.
+    */
+    'stashContent',
     /**
      * Optional path to the pipeline configuration file defining project specific settings.
      */
@@ -110,7 +129,6 @@ import static com.sap.piper.Prerequisites.checkScript
  */
 @GenerateStageDocumentation(defaultStageName = 'Init')
 void call(Map parameters = [:]) {
-
     def script = checkScript(this, parameters) ?: this
     def utils = parameters.juStabUtils ?: new Utils()
 
@@ -136,6 +154,13 @@ void call(Map parameters = [:]) {
         if (!skipCheckout) {
             scmInfo = checkout(parameters.checkoutMap ?: scm)
         }
+        else {
+            def stashContent = parameters.stashContent
+            if(stashContent == null || stashContent.size() == 0) {
+                error "[${STEP_NAME}] needs stashes if you skip checkout"
+            }
+            utils.unstashAll(stashContent)
+        }
 
         setupCommonPipelineEnvironment(script: script, customDefaults: parameters.customDefaults, scmInfo: scmInfo,
             configFile: parameters.configFile, customDefaultsFromFiles: parameters.customDefaultsFromFiles)
@@ -151,24 +176,28 @@ void call(Map parameters = [:]) {
             .withMandatoryProperty('buildTool')
             .use()
 
+
         if (config.legacyConfigSettings) {
             Map legacyConfigSettings = readYaml(text: libraryResource(config.legacyConfigSettings))
             checkForLegacyConfiguration(script: script, legacyConfigSettings: legacyConfigSettings)
         }
 
-        String buildTool = checkBuildTool(config)
-		
+        String buildTool = config.buildTool
+        String buildToolDesc = inferBuildToolDesc(script, config.buildTool)
+
+        checkBuildTool(buildTool, buildToolDesc)
+
         script.commonPipelineEnvironment.projectName = config.projectName
 
         if (!script.commonPipelineEnvironment.projectName && config.inferProjectName) {
-            script.commonPipelineEnvironment.projectName = inferProjectName(script, buildTool)
+            script.commonPipelineEnvironment.projectName = inferProjectName(script, buildTool, buildToolDesc)
         }
 
         if (Boolean.valueOf(env.ON_K8S) && config.containerMapResource) {
             ContainerMap.instance.initFromResource(script, config.containerMapResource, buildTool)
         }
 
-        initStashConfiguration(script, config.stashSettings, config.verbose ?: false)
+        initStashConfiguration(script, config.stashSettings, config.customStashSettings, config.verbose ?: false)
 
         if (config.verbose) {
             echo "piper-lib-os  configuration: ${script.commonPipelineEnvironment.configuration}"
@@ -202,9 +231,17 @@ void call(Map parameters = [:]) {
             if (parameters.script.commonPipelineEnvironment.configuration.runStep?.get('Init')?.slackSendNotification) {
                 slackSendNotification script: script, message: "STARTED: Job <${env.BUILD_URL}|${URLDecoder.decode(env.JOB_NAME, java.nio.charset.StandardCharsets.UTF_8.name())} ${env.BUILD_DISPLAY_NAME}>", color: 'WARNING'
             }
+
+            config.artifactPrepareVersion = true
+        }
+
+        if (config.artifactPrepareVersion) {
             Map prepareVersionParams = [script: script]
             if (config.inferBuildTool) {
                 prepareVersionParams.buildTool = buildTool
+            }
+            if(buildToolDesc) {
+                prepareVersionParams.filePath = buildToolDesc
             }
             if (env.ON_K8S && !config.runArtifactVersioningOnPod) {
                 // We force dockerImage: "" for the K8S case to avoid the execution of artifactPrepareVersion in a K8S Pod.
@@ -216,50 +253,67 @@ void call(Map parameters = [:]) {
             }
             artifactPrepareVersion prepareVersionParams
         }
+
+        if (config.transportRequestReqIDFromGit) {
+            transportRequestReqIDFromGit(script: script)
+        }
         pipelineStashFilesBeforeBuild script: script
-		
     }
 }
 
-private String inferProjectName(Script script, String buildTool) {
+// Infer build tool descriptor (maven, npm, mta)
+private static String inferBuildToolDesc(script, buildTool) {
+
+    String buildToolDesc = null
+
     switch (buildTool) {
         case 'maven':
-            def pom = script.readMavenPom file: 'pom.xml'
+            Map configBuild = script.commonPipelineEnvironment.getStepConfiguration('mavenBuild', 'Build')
+            buildToolDesc = configBuild.pomPath? configBuild.pomPath : 'pom.xml'
+            break
+        case 'npm': // no parameter for the descriptor path
+            buildToolDesc = 'package.json'
+            break
+        case 'mta':
+            Map configBuild = script.commonPipelineEnvironment.getStepConfiguration('mtaBuild', 'Build')
+            buildToolDesc = configBuild.source? configBuild.source + '/mta.yaml' : 'mta.yaml'
+            break
+        default:
+            break;
+    }
+
+    return buildToolDesc
+}
+
+private String inferProjectName(Script script, String buildTool, String buildToolDesc) {
+    switch (buildTool) {
+        case 'maven':
+            def pom = script.readMavenPom file: buildToolDesc
             return "${pom.groupId}-${pom.artifactId}"
         case 'npm':
-            Map packageJson = script.readJSON file: 'package.json'
+            Map packageJson = script.readJSON file: buildToolDesc
             return packageJson.name
         case 'mta':
-            Map mta = script.readYaml file: 'mta.yaml'
+            Map mta = script.readYaml file: buildToolDesc
             return mta.ID
     }
 
     script.error "Cannot infer projectName. Project buildTool was none of the expected ones 'mta', 'maven', or 'npm'."
 }
 
-private String checkBuildTool(config) {
-    def buildDescriptorPattern = ''
-    String buildTool = config.buildTool
-
-    switch (buildTool) {
-        case 'maven':
-            buildDescriptorPattern = 'pom.xml'
-            break
-        case 'npm':
-            buildDescriptorPattern = 'package.json'
-            break
-        case 'mta':
-            buildDescriptorPattern = 'mta.yaml'
-            break
+private checkBuildTool(String buildTool, String buildDescriptorPattern) {
+    if (buildTool != "mta" && !findFiles(glob: buildDescriptorPattern)) {
+        error "[${STEP_NAME}] buildTool configuration '${buildTool}' does not fit to your project (buildDescriptorPattern: '${buildDescriptorPattern}'), please set buildTool as general setting in your .pipeline/config.yml correctly, see also https://sap.github.io/jenkins-library/configuration/"
     }
-    if (buildDescriptorPattern && !findFiles(glob: buildDescriptorPattern)) {
-        error "[${STEP_NAME}] buildTool configuration '${config.buildTool}' does not fit to your project, please set buildTool as general setting in your .pipeline/config.yml correctly, see also https://sap.github.io/jenkins-library/configuration/"
-    }
-    return buildTool
 }
 
-private void initStashConfiguration (script, stashSettings, verbose) {
-    Map stashConfiguration = readYaml(text: libraryResource(stashSettings))
+private void initStashConfiguration (script, stashSettings, customStashSettings, verbose) {
+    Map stashConfiguration = null
+    if (customStashSettings){
+        stashConfiguration = readYaml(file: customStashSettings)
+    }else{
+        stashConfiguration = readYaml(text: libraryResource(stashSettings))
+    }
     if (verbose) echo "Stash config: ${stashConfiguration}"
     script.commonPipelineEnvironment.configuration.stageStashes = stashConfiguration
 }

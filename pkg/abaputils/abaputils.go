@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/SAP/jenkins-library/pkg/command"
 	piperhttp "github.com/SAP/jenkins-library/pkg/http"
 	"github.com/SAP/jenkins-library/pkg/log"
+	"github.com/ghodss/yaml"
 	"github.com/pkg/errors"
 )
 
@@ -43,19 +45,23 @@ func (abaputils *AbapUtils) GetAbapCommunicationArrangementInfo(options AbapEnvi
 		// Host, User and Password are directly provided -> check for host schema (double https)
 		match, err := regexp.MatchString(`^(https|HTTPS):\/\/.*`, options.Host)
 		if err != nil {
+			log.SetErrorCategory(log.ErrorConfiguration)
 			return connectionDetails, errors.Wrap(err, "Schema validation for host parameter failed. Check for https.")
 		}
 		var hostOdataURL = options.Host + oDataURL
 		if match {
 			connectionDetails.URL = hostOdataURL
+			connectionDetails.Host = options.Host
 		} else {
 			connectionDetails.URL = "https://" + hostOdataURL
+			connectionDetails.Host = "https://" + options.Host
 		}
 		connectionDetails.User = options.Username
 		connectionDetails.Password = options.Password
 	} else {
 		if options.CfAPIEndpoint == "" || options.CfOrg == "" || options.CfSpace == "" || options.CfServiceInstance == "" || options.CfServiceKeyName == "" {
 			var err = errors.New("Parameters missing. Please provide EITHER the Host of the ABAP server OR the Cloud Foundry ApiEndpoint, Organization, Space, Service Instance and a corresponding Service Key for the Communication Scenario SAP_COM_0510")
+			log.SetErrorCategory(log.ErrorConfiguration)
 			return connectionDetails, err
 		}
 		// Url, User and Password should be read from a cf service key
@@ -63,6 +69,7 @@ func (abaputils *AbapUtils) GetAbapCommunicationArrangementInfo(options AbapEnvi
 		if error != nil {
 			return connectionDetails, errors.Wrap(error, "Read service key failed")
 		}
+		connectionDetails.Host = abapServiceKey.URL
 		connectionDetails.URL = abapServiceKey.URL + oDataURL
 		connectionDetails.User = abapServiceKey.Abap.Username
 		connectionDetails.Password = abapServiceKey.Abap.Password
@@ -73,6 +80,7 @@ func (abaputils *AbapUtils) GetAbapCommunicationArrangementInfo(options AbapEnvi
 // ReadServiceKeyAbapEnvironment from Cloud Foundry and returns it. Depending on user/developer requirements if he wants to perform further Cloud Foundry actions
 func ReadServiceKeyAbapEnvironment(options AbapEnvironmentOptions, c command.ExecRunner) (AbapServiceKey, error) {
 
+	var abapServiceKeyV8 AbapServiceKeyV8
 	var abapServiceKey AbapServiceKey
 	var serviceKeyJSON string
 	var err error
@@ -93,17 +101,33 @@ func ReadServiceKeyAbapEnvironment(options AbapEnvironmentOptions, c command.Exe
 
 	if err != nil {
 		// Executing cfReadServiceKeyScript failed
-		return abapServiceKey, err
+		return abapServiceKeyV8.Credentials, err
 	}
 
-	// parse
-	json.Unmarshal([]byte(serviceKeyJSON), &abapServiceKey)
+	// Depending on the cf cli version, the service key may be returned in a different format. For compatibility reason, both formats are supported
+	unmarshalErrorV8 := json.Unmarshal([]byte(serviceKeyJSON), &abapServiceKeyV8)
+	if abapServiceKeyV8 == (AbapServiceKeyV8{}) {
+		if unmarshalErrorV8 != nil {
+			log.Entry().Debug(unmarshalErrorV8.Error())
+		}
+		log.Entry().Debug("Could not parse the service key in the cf cli v8 format.")
+	} else {
+		log.Entry().Info("Service Key read successfully")
+		return abapServiceKeyV8.Credentials, nil
+	}
+
+	unmarshalError := json.Unmarshal([]byte(serviceKeyJSON), &abapServiceKey)
 	if abapServiceKey == (AbapServiceKey{}) {
-		return abapServiceKey, errors.New("Parsing the service key failed. Service key is empty")
+		if unmarshalError != nil {
+			log.Entry().Debug(unmarshalError.Error())
+		}
+		log.Entry().Debug("Could not parse the service key in the cf cli v7 format.")
+	} else {
+		log.Entry().Info("Service Key read successfully")
+		return abapServiceKey, nil
 	}
-
-	log.Entry().Info("Service Key read successfully")
-	return abapServiceKey, nil
+	log.SetErrorCategory(log.ErrorInfrastructure)
+	return abapServiceKeyV8.Credentials, errors.New("Parsing the service key failed for all supported formats. Service key is empty")
 }
 
 /*
@@ -114,6 +138,30 @@ func (abaputils *AbapUtils) GetPollIntervall() time.Duration {
 		return abaputils.Intervall
 	}
 	return 10 * time.Second
+}
+
+/*
+ReadCOnfigFile reads a file from a specific path and returns the json string as []byte
+*/
+func ReadConfigFile(path string) (file []byte, err error) {
+	filelocation, err := filepath.Glob(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(filelocation) == 0 {
+		return nil, errors.New("Could not find " + path)
+	}
+	filename, err := filepath.Abs(filelocation[0])
+	if err != nil {
+		return nil, err
+	}
+	yamlFile, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var jsonFile []byte
+	jsonFile, err = yaml.YAMLToJSON(yamlFile)
+	return jsonFile, err
 }
 
 // GetHTTPResponse wraps the SendRequest function of piperhttp
@@ -144,40 +192,39 @@ func HandleHTTPError(resp *http.Response, err error, message string, connectionD
 
 		log.Entry().WithField("StatusCode", resp.Status).Error(message)
 
-		errorDetails, parsingError := getErrorDetailsFromResponse(resp)
+		errorText, errorCode, parsingError := GetErrorDetailsFromResponse(resp)
 		if parsingError != nil {
 			return err
 		}
-		abapError := errors.New(errorDetails)
+		abapError := errors.New(fmt.Sprintf("%s - %s", errorCode, errorText))
 		err = errors.Wrap(abapError, err.Error())
 
 	}
 	return err
 }
 
-func getErrorDetailsFromResponse(resp *http.Response) (errorString string, err error) {
+func GetErrorDetailsFromResponse(resp *http.Response) (errorString string, errorCode string, err error) {
 
 	// Include the error message of the ABAP Environment system, if available
 	var abapErrorResponse AbapError
 	bodyText, readError := ioutil.ReadAll(resp.Body)
 	if readError != nil {
-		return errorString, readError
+		return "", "", readError
 	}
 	var abapResp map[string]*json.RawMessage
 	errUnmarshal := json.Unmarshal(bodyText, &abapResp)
 	if errUnmarshal != nil {
-		return errorString, errUnmarshal
+		return "", "", errUnmarshal
 	}
 	if _, ok := abapResp["error"]; ok {
 		json.Unmarshal(*abapResp["error"], &abapErrorResponse)
 		if (AbapError{}) != abapErrorResponse {
-			log.Entry().WithField("ErrorCode", abapErrorResponse.Code).Error(abapErrorResponse.Message.Value)
-			errorString = fmt.Sprintf("%s - %s", abapErrorResponse.Code, abapErrorResponse.Message.Value)
-			return errorString, nil
+			log.Entry().WithField("ErrorCode", abapErrorResponse.Code).Debug(abapErrorResponse.Message.Value)
+			return abapErrorResponse.Message.Value, abapErrorResponse.Code, nil
 		}
 	}
 
-	return errorString, errors.New("Could not parse the JSON error response")
+	return "", "", errors.New("Could not parse the JSON error response")
 
 }
 
@@ -218,7 +265,7 @@ type AbapEnvironmentRunATCCheckOptions struct {
  *	Structs for ABAP in general *
  ********************************/
 
-//AbapEnvironmentOptions contains cloud foundry fields and the host parameter for connections to ABAP Environment instances
+// AbapEnvironmentOptions contains cloud foundry fields and the host parameter for connections to ABAP Environment instances
 type AbapEnvironmentOptions struct {
 	Username          string `json:"username,omitempty"`
 	Password          string `json:"password,omitempty"`
@@ -237,6 +284,7 @@ type AbapMetadata struct {
 
 // ConnectionDetailsHTTP contains fields for HTTP connections including the XCSRF token
 type ConnectionDetailsHTTP struct {
+	Host       string
 	User       string `json:"user"`
 	Password   string `json:"password"`
 	URL        string `json:"url"`
@@ -253,6 +301,12 @@ type AbapError struct {
 type AbapErrorMessage struct {
 	Lang  string `json:"lang"`
 	Value string `json:"value"`
+}
+
+// AbapServiceKeyV8 contains the new format of an ABAP service key
+
+type AbapServiceKeyV8 struct {
+	Credentials AbapServiceKey `json:"credentials"`
 }
 
 // AbapServiceKey contains information about an ABAP service key
@@ -290,11 +344,13 @@ type AbapBinding struct {
 
 // ClientMock contains information about the client mock
 type ClientMock struct {
-	Token      string
-	Body       string
-	BodyList   []string
-	StatusCode int
-	Error      error
+	Token              string
+	Body               string
+	BodyList           []string
+	StatusCode         int
+	Error              error
+	NilResponse        bool
+	ErrorInsteadOfDump bool
 }
 
 // SetOptions sets clientOptions for a client mock
@@ -303,10 +359,17 @@ func (c *ClientMock) SetOptions(opts piperhttp.ClientOptions) {}
 // SendRequest sets a HTTP response for a client mock
 func (c *ClientMock) SendRequest(method, url string, bdy io.Reader, hdr http.Header, cookies []*http.Cookie) (*http.Response, error) {
 
+	if c.NilResponse {
+		return nil, c.Error
+	}
+
 	var body []byte
 	if c.Body != "" {
 		body = []byte(c.Body)
 	} else {
+		if c.ErrorInsteadOfDump && len(c.BodyList) == 0 {
+			return nil, errors.New("No more bodies in the list")
+		}
 		bodyString := c.BodyList[len(c.BodyList)-1]
 		c.BodyList = c.BodyList[:len(c.BodyList)-1]
 		body = []byte(bodyString)
@@ -318,6 +381,11 @@ func (c *ClientMock) SendRequest(method, url string, bdy io.Reader, hdr http.Hea
 		Header:     header,
 		Body:       ioutil.NopCloser(bytes.NewReader(body)),
 	}, c.Error
+}
+
+// DownloadFile : Empty file download
+func (c *ClientMock) DownloadFile(url, filename string, header http.Header, cookies []*http.Cookie) error {
+	return nil
 }
 
 // AUtilsMock mock

@@ -2,14 +2,19 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
 
+	"github.com/SAP/jenkins-library/pkg/buildsettings"
 	"github.com/SAP/jenkins-library/pkg/npm"
 
 	"github.com/SAP/jenkins-library/pkg/command"
@@ -19,6 +24,7 @@ import (
 	"github.com/SAP/jenkins-library/pkg/piperutils"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
 	"github.com/ghodss/yaml"
+	"github.com/pkg/errors"
 )
 
 const templateMtaYml = `_schema-version: "3.1"
@@ -30,11 +36,11 @@ parameters:
 
 modules:
   - name: {{.ApplicationName}}
-    type: html5
+    type: com.sap.hcp.html5
     path: .
     parameters:
-       version: {{.Version}}-${timestamp}
-       name: {{.ApplicationName}}
+      version: {{.Version}}-${timestamp}
+      name: {{.ApplicationName}}
     build-parameters:
       builder: grunt
       build-result: dist`
@@ -114,9 +120,11 @@ func (bundle *mtaBuildUtilsBundle) DownloadAndCopySettingsFiles(globalSettingsFi
 
 func newMtaBuildUtilsBundle() mtaBuildUtils {
 	utils := mtaBuildUtilsBundle{
-		Command: &command.Command{},
-		Files:   &piperutils.Files{},
-		Client:  &piperhttp.Client{},
+		Command: &command.Command{
+			StepName: "mtaBuild",
+		},
+		Files:  &piperutils.Files{},
+		Client: &piperhttp.Client{},
 	}
 	utils.Stdout(log.Writer())
 	utils.Stderr(log.Writer())
@@ -148,9 +156,14 @@ func runMtaBuild(config mtaBuildOptions,
 		return err
 	}
 
+	err = handleActiveProfileUpdate(config, utils)
+	if err != nil {
+		return err
+	}
+
 	err = utils.SetNpmRegistries(config.DefaultNpmRegistry)
 
-	mtaYamlFile := "mta.yaml"
+	mtaYamlFile := filepath.Join(getSourcePath(config), "mta.yaml")
 	mtaYamlFileExists, err := utils.FileExists(mtaYamlFile)
 
 	if err != nil {
@@ -171,7 +184,7 @@ func runMtaBuild(config mtaBuildOptions,
 		return err
 	}
 
-	mtarName, err := getMtarName(config, mtaYamlFile, utils)
+	mtarName, isMtarNativelySuffixed, err := getMtarName(config, mtaYamlFile, utils)
 
 	if err != nil {
 		return err
@@ -189,15 +202,13 @@ func runMtaBuild(config mtaBuildOptions,
 	if len(config.Extensions) != 0 {
 		call = append(call, fmt.Sprintf("--extensions=%s", config.Extensions))
 	}
-	if config.Source != "" && config.Source != "./" {
-		call = append(call, "--source", config.Source)
-	} else {
-		call = append(call, "--source", "./")
-	}
-	if config.Target != "" && config.Target != "./" {
-		call = append(call, "--target", config.Target)
-	} else {
-		call = append(call, "--target", "./")
+
+	call = append(call, "--source", getSourcePath(config))
+	call = append(call, "--target", getAbsPath(getMtarFileRoot(config)))
+
+	if config.Jobs > 0 {
+		call = append(call, "--mode=verbose")
+		call = append(call, "--jobs="+strconv.Itoa(config.Jobs))
 	}
 
 	if err = addNpmBinToPath(utils); err != nil {
@@ -219,7 +230,29 @@ func runMtaBuild(config mtaBuildOptions,
 		return err
 	}
 
-	commonPipelineEnvironment.mtarFilePath = mtarName
+	log.Entry().Debugf("creating build settings information...")
+	stepName := "mtaBuild"
+	dockerImage, err := GetDockerImageValue(stepName)
+	if err != nil {
+		return err
+	}
+
+	mtaConfig := buildsettings.BuildOptions{
+		Profiles:           config.Profiles,
+		GlobalSettingsFile: config.GlobalSettingsFile,
+		Publish:            config.Publish,
+		BuildSettingsInfo:  config.BuildSettingsInfo,
+		DefaultNpmRegistry: config.DefaultNpmRegistry,
+		DockerImage:        dockerImage,
+	}
+	buildSettingsInfo, err := buildsettings.CreateBuildSettingsInfo(&mtaConfig, stepName)
+	if err != nil {
+		log.Entry().Warnf("failed to create build settings info: %v", err)
+	}
+	commonPipelineEnvironment.custom.buildSettingsInfo = buildSettingsInfo
+
+	commonPipelineEnvironment.mtarFilePath = filepath.ToSlash(getMtarFilePath(config, mtarName))
+	commonPipelineEnvironment.custom.mtaBuildToolDesc = filepath.ToSlash(mtaYamlFile)
 
 	if config.InstallArtifacts {
 		// install maven artifacts in local maven repo because `mbt build` executes `mvn package -B`
@@ -233,7 +266,61 @@ func runMtaBuild(config mtaBuildOptions,
 			return err
 		}
 	}
+
+	if config.Publish {
+		log.Entry().Infof("publish detected")
+		if (len(config.MtaDeploymentRepositoryPassword) > 0) && (len(config.MtaDeploymentRepositoryUser) > 0) &&
+			(len(config.MtaDeploymentRepositoryURL) > 0) {
+			if (len(config.MtarGroup) > 0) && (len(config.Version) > 0) {
+				httpClient := &piperhttp.Client{}
+
+				credentialsEncoded := "Basic " + base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", config.MtaDeploymentRepositoryUser, config.MtaDeploymentRepositoryPassword)))
+				headers := http.Header{}
+				headers.Add("Authorization", credentialsEncoded)
+
+				config.MtarGroup = strings.ReplaceAll(config.MtarGroup, ".", "/")
+
+				mtarArtifactName := mtarName
+
+				// only trim the .mtar suffix from the mtarName
+				if !isMtarNativelySuffixed {
+					mtarArtifactName = strings.TrimSuffix(mtarArtifactName, ".mtar")
+				}
+
+				config.MtaDeploymentRepositoryURL += config.MtarGroup + "/" + mtarArtifactName + "/" + config.Version + "/" + fmt.Sprintf("%v-%v.%v", mtarArtifactName, config.Version, "mtar")
+
+				commonPipelineEnvironment.custom.mtarPublishedURL = config.MtaDeploymentRepositoryURL
+
+				log.Entry().Infof("pushing mtar artifact to repository : %s", config.MtaDeploymentRepositoryURL)
+
+				data, err := os.Open(getMtarFilePath(config, mtarName))
+				if err != nil {
+					return errors.Wrap(err, "failed to open mtar archive for upload")
+				}
+				_, httpErr := httpClient.SendRequest("PUT", config.MtaDeploymentRepositoryURL, data, headers, nil)
+
+				if httpErr != nil {
+					return errors.Wrap(err, "failed to upload mtar to repository")
+				}
+			} else {
+				return errors.New("mtarGroup, version not found and must be present")
+
+			}
+
+		} else {
+			return errors.New("mtaDeploymentRepositoryUser, mtaDeploymentRepositoryPassword and mtaDeploymentRepositoryURL not found , must be present")
+		}
+	} else {
+		log.Entry().Infof("no publish detected, skipping upload of mtar artifact")
+	}
 	return err
+}
+
+func handleActiveProfileUpdate(config mtaBuildOptions, utils mtaBuildUtils) error {
+	if len(config.Profiles) > 0 {
+		return maven.UpdateActiveProfileInSettingsXML(config.Profiles, utils)
+	}
+	return nil
 }
 
 func installMavenArtifacts(utils mtaBuildUtils, config mtaBuildOptions) error {
@@ -261,9 +348,10 @@ func addNpmBinToPath(utils mtaBuildUtils) error {
 	return nil
 }
 
-func getMtarName(config mtaBuildOptions, mtaYamlFile string, utils mtaBuildUtils) (string, error) {
+func getMtarName(config mtaBuildOptions, mtaYamlFile string, utils mtaBuildUtils) (string, bool, error) {
 
 	mtarName := config.MtarName
+	isMtarNativelySuffixed := false
 	if len(mtarName) == 0 {
 
 		log.Entry().Debugf("mtar name not provided via config. Extracting from file \"%s\"", mtaYamlFile)
@@ -272,20 +360,27 @@ func getMtarName(config mtaBuildOptions, mtaYamlFile string, utils mtaBuildUtils
 
 		if err != nil {
 			log.SetErrorCategory(log.ErrorConfiguration)
-			return "", err
+			return "", isMtarNativelySuffixed, err
 		}
 
 		if len(mtaID) == 0 {
 			log.SetErrorCategory(log.ErrorConfiguration)
-			return "", fmt.Errorf("Invalid mtar ID. Was empty")
+			return "", isMtarNativelySuffixed, fmt.Errorf("Invalid mtar ID. Was empty")
 		}
 
 		log.Entry().Debugf("mtar name extracted from file \"%s\": \"%s\"", mtaYamlFile, mtaID)
 
-		mtarName = mtaID + ".mtar"
+		// there can be cases where the mtaId itself has the value com.myComapany.mtar , adding an extra .mtar causes .mtar.mtar
+		if !strings.HasSuffix(mtaID, ".mtar") {
+			mtarName = mtaID + ".mtar"
+		} else {
+			isMtarNativelySuffixed = true
+			mtarName = mtaID
+		}
+
 	}
 
-	return mtarName, nil
+	return mtarName, isMtarNativelySuffixed, nil
 
 }
 
@@ -320,7 +415,7 @@ func getTimestamp() string {
 
 func createMtaYamlFile(mtaYamlFile, applicationName string, utils mtaBuildUtils) error {
 
-	log.Entry().Debugf("mta yaml file not found in project sources.")
+	log.Entry().Infof("\"%s\" file not found in project sources", mtaYamlFile)
 
 	if len(applicationName) == 0 {
 		return fmt.Errorf("'%[1]s' not found in project sources and 'applicationName' not provided as parameter - cannot generate '%[1]s' file", mtaYamlFile)
@@ -353,7 +448,9 @@ func createMtaYamlFile(mtaYamlFile, applicationName string, utils mtaBuildUtils)
 		return err
 	}
 
-	utils.FileWrite(mtaYamlFile, []byte(mtaConfig), 0644)
+	if err := utils.FileWrite(mtaYamlFile, []byte(mtaConfig), 0644); err != nil {
+		return fmt.Errorf("failed to write %v: %w", mtaYamlFile, err)
+	}
 	log.Entry().Infof("\"%s\" created.", mtaYamlFile)
 
 	return nil
@@ -389,7 +486,9 @@ func generateMta(id, applicationName, version string) (string, error) {
 	props := properties{ID: id, ApplicationName: applicationName, Version: version}
 
 	var script bytes.Buffer
-	tmpl.Execute(&script, props)
+	if err := tmpl.Execute(&script, props); err != nil {
+		log.Entry().Warningf("failed to execute template: %v", err)
+	}
 	return script.String(), nil
 }
 
@@ -411,4 +510,50 @@ func getMtaID(mtaYamlFile string, utils mtaBuildUtils) (string, error) {
 	}
 
 	return id, nil
+}
+
+// the "source" path locates the project's root
+func getSourcePath(config mtaBuildOptions) string {
+	path := config.Source
+	if path == "" {
+		path = "./"
+	}
+	return filepath.FromSlash(path)
+}
+
+// target defines a subfolder of the project's root
+func getTargetPath(config mtaBuildOptions) string {
+	path := config.Target
+	if path == "" {
+		path = "./"
+	}
+	return filepath.FromSlash(path)
+}
+
+// the "mtar" path resides below the project's root
+// path=<config.source>/<config.target>/<mtarname>
+func getMtarFileRoot(config mtaBuildOptions) string {
+	sourcePath := getSourcePath(config)
+	targetPath := getTargetPath(config)
+
+	return filepath.FromSlash(filepath.Join(sourcePath, targetPath))
+}
+
+func getMtarFilePath(config mtaBuildOptions, mtarName string) string {
+	root := getMtarFileRoot(config)
+
+	if root == "" || root == filepath.FromSlash("./") {
+		return mtarName
+	}
+
+	return filepath.FromSlash(filepath.Join(root, mtarName))
+}
+
+func getAbsPath(path string) string {
+	abspath, err := filepath.Abs(path)
+	// ignore error, pass customers path value in case of trouble
+	if err != nil {
+		abspath = path
+	}
+	return filepath.FromSlash(abspath)
 }

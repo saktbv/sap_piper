@@ -1,8 +1,10 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
 	"io/ioutil"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -35,18 +37,19 @@ func TestRunIntegrationArtifactTriggerIntegrationTest(t *testing.T) {
 			}
 		}`
 		config := integrationArtifactTriggerIntegrationTestOptions{
-			IFlowServiceKey:   iFlowServiceKey,
-			IntegrationFlowID: "CPI_IFlow_Call_using_Cert",
-			MessageBodyPath:   "/file.txt",
-			ContentType:       "",
+			IntegrationFlowServiceKey: iFlowServiceKey,
+			IntegrationFlowID:         "CPI_IFlow_Call_using_Cert",
+			MessageBodyPath:           "/file.txt",
+			ContentType:               "",
 		}
 
 		utils := newIntegrationArtifactTriggerIntegrationTestTestsUtils()
 		utils.AddFile("file.txt", []byte("dummycontent"))
 		httpClient := httpMockCpis{CPIFunction: "TriggerIntegrationTest", ResponseBody: ``, TestType: "Positive"}
+		cpe := integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment{}
 
 		//test
-		err := callIFlowURL(&config, nil, utils, &httpClient, "")
+		err := callIFlowURL(&config, utils, &httpClient, "", &cpe)
 
 		//assert
 		assert.Error(t, err)
@@ -63,27 +66,26 @@ func TestRunIntegrationArtifactTriggerIntegrationTest(t *testing.T) {
 			}
 		}`
 		config := integrationArtifactTriggerIntegrationTestOptions{
-			IFlowServiceKey:   iFlowServiceKey,
-			IntegrationFlowID: "CPI_IFlow_Call_using_Cert",
-			MessageBodyPath:   "test.txt",
-			ContentType:       "txt",
+			IntegrationFlowServiceKey: iFlowServiceKey,
+			IntegrationFlowID:         "CPI_IFlow_Call_using_Cert",
+			MessageBodyPath:           "test.txt",
+			ContentType:               "txt",
 		}
 
 		utils := newIntegrationArtifactTriggerIntegrationTestTestsUtils()
 		//no file created here. error expected
 		httpClient := httpMockCpis{CPIFunction: "TriggerIntegrationTest", ResponseBody: ``, TestType: "Positive"}
+		cpe := integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment{}
 
 		//test
-		err := callIFlowURL(&config, nil, utils, &httpClient, "")
+		err := callIFlowURL(&config, utils, &httpClient, "", &cpe)
 
 		//assert
 		assert.Error(t, err)
 	})
 
 	t.Run("MessageBodyPath, ContentType, and file good (SUCCESS) callIFlowURL", func(t *testing.T) {
-		dir, err := ioutil.TempDir("", "")
-		defer os.RemoveAll(dir) // clean up
-		assert.NoError(t, err, "Error when creating temp dir")
+		dir := t.TempDir()
 		//init
 		iFlowServiceKey := `{
 			"oauth": {
@@ -94,19 +96,22 @@ func TestRunIntegrationArtifactTriggerIntegrationTest(t *testing.T) {
 			}
 		}`
 		config := integrationArtifactTriggerIntegrationTestOptions{
-			IFlowServiceKey:   iFlowServiceKey,
-			IntegrationFlowID: "CPI_IFlow_Call_using_Cert",
-			MessageBodyPath:   filepath.Join(dir, "test.txt"),
-			ContentType:       "txt",
+			IntegrationFlowServiceKey: iFlowServiceKey,
+			IntegrationFlowID:         "CPI_IFlow_Call_using_Cert",
+			MessageBodyPath:           filepath.Join(dir, "test.txt"),
+			ContentType:               "txt",
 		}
 
 		utils := newIntegrationArtifactTriggerIntegrationTestTestsUtils()
 		utils.AddFile(config.MessageBodyPath, []byte("dummycontent1")) //have to add a file here to see in utils
-		ioutil.WriteFile(config.MessageBodyPath, []byte("dummycontent2"), 0755)
+		if err := ioutil.WriteFile(config.MessageBodyPath, []byte("dummycontent2"), 0755); err != nil {
+			t.Fail()
+		}
 		httpClient := httpMockCpis{CPIFunction: "TriggerIntegrationTest", ResponseBody: ``, TestType: "Positive"}
+		cpe := integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment{}
 
 		//test
-		err = callIFlowURL(&config, nil, utils, &httpClient, "https://my-service.com/endpoint")
+		err := callIFlowURL(&config, utils, &httpClient, "https://my-service.com/endpoint", &cpe)
 
 		//assert
 		assert.NoError(t, err)
@@ -125,19 +130,20 @@ func TestRunIntegrationArtifactTriggerIntegrationTest(t *testing.T) {
 			}
 		}`
 		config := integrationArtifactTriggerIntegrationTestOptions{
-			IFlowServiceKey:   iFlowServiceKey,
-			IntegrationFlowID: "CPI_IFlow_Call_using_Cert",
-			MessageBodyPath:   "",
-			ContentType:       "txt",
+			IntegrationFlowServiceKey: iFlowServiceKey,
+			IntegrationFlowID:         "CPI_IFlow_Call_using_Cert",
+			MessageBodyPath:           "",
+			ContentType:               "txt",
 		}
 
 		utils := newIntegrationArtifactTriggerIntegrationTestTestsUtils()
 		//utils.AddFile(config.MessageBodyPath, []byte("dummycontent1")) //have to add a file here to see in utils
 		//ioutil.WriteFile(config.MessageBodyPath, []byte("dummycontent2"), 0755)
 		httpClient := httpMockCpis{CPIFunction: "TriggerIntegrationTest", ResponseBody: ``, TestType: "Positive"}
+		cpe := integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment{}
 
 		//test
-		err := callIFlowURL(&config, nil, utils, &httpClient, "https://my-service.com/endpoint")
+		err := callIFlowURL(&config, utils, &httpClient, "https://my-service.com/endpoint", &cpe)
 
 		//assert
 		assert.NoError(t, err)
@@ -147,9 +153,7 @@ func TestRunIntegrationArtifactTriggerIntegrationTest(t *testing.T) {
 	})
 
 	t.Run("nil fileBody (SUCCESS) callIFlowURL", func(t *testing.T) {
-		dir, err := ioutil.TempDir("", "")
-		defer os.RemoveAll(dir) // clean up
-		assert.NoError(t, err, "Error when creating temp dir")
+		dir := t.TempDir()
 		//init
 		iFlowServiceKey := `{
 			"oauth": {
@@ -160,21 +164,54 @@ func TestRunIntegrationArtifactTriggerIntegrationTest(t *testing.T) {
 			}
 		}`
 		config := integrationArtifactTriggerIntegrationTestOptions{
-			IFlowServiceKey:   iFlowServiceKey,
-			IntegrationFlowID: "CPI_IFlow_Call_using_Cert",
-			MessageBodyPath:   filepath.Join(dir, "test.txt"),
-			ContentType:       "txt",
+			IntegrationFlowServiceKey: iFlowServiceKey,
+			IntegrationFlowID:         "CPI_IFlow_Call_using_Cert",
+			MessageBodyPath:           filepath.Join(dir, "test.txt"),
+			ContentType:               "txt",
 		}
 
 		utils := newIntegrationArtifactTriggerIntegrationTestTestsUtils()
 		utils.AddFile(config.MessageBodyPath, []byte(nil)) //have to add a file here to see in utils
-		ioutil.WriteFile(config.MessageBodyPath, []byte(nil), 0755)
+		if err := ioutil.WriteFile(config.MessageBodyPath, []byte(nil), 0755); err != nil {
+			t.Fail()
+		}
 		httpClient := httpMockCpis{CPIFunction: "TriggerIntegrationTest", ResponseBody: ``, TestType: "Positive"}
+		cpe := integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment{}
 
 		//test
-		err = callIFlowURL(&config, nil, utils, &httpClient, "")
+		err := callIFlowURL(&config, utils, &httpClient, "", &cpe)
 
 		//assert
 		assert.NoError(t, err)
+	})
+
+	t.Run("success - check correct body and headers in cpe", func(t *testing.T) {
+		//init
+		iFlowServiceKey := `{
+			"oauth": {
+				"url": "https://demo",
+				"clientid": "demouser",
+				"clientsecret": "******",
+				"tokenurl": "https://demo/oauth/token"
+			}
+		}`
+		config := integrationArtifactTriggerIntegrationTestOptions{
+			IntegrationFlowServiceKey: iFlowServiceKey,
+			IntegrationFlowID:         "CPI_IFlow_Call_using_Cert",
+			ContentType:               "txt",
+		}
+
+		utils := newIntegrationArtifactTriggerIntegrationTestTestsUtils()
+		httpClient := httpMockCpis{CPIFunction: "TriggerIntegrationTest", ResponseBody: ``, TestType: "Positive"}
+		cpe := integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment{}
+
+		//test
+		err := callIFlowURL(&config, utils, &httpClient, "", &cpe)
+
+		//assert
+		assert.NoError(t, err)
+		bodyRegexIgnoringWhiteSpaces := "{\\s*\"code\": \"Good Request\",\\s*\"message\": {\\s*\"@lang\": \"en\",\\s*\"#text\": \"valid\"\\s*}\\s*}"
+		assert.Regexp(t, bodyRegexIgnoringWhiteSpaces, cpe.custom.integrationFlowTriggerIntegrationTestResponseBody)
+		assert.Equal(t, "{\"test\":[\"this is a test\"]}", cpe.custom.integrationFlowTriggerIntegrationTestResponseHeaders)
 	})
 }

@@ -6,7 +6,7 @@ import groovy.transform.Field
 import java.nio.charset.StandardCharsets
 
 @Field String STEP_NAME = getClass().getName()
-@Field String METADATA_FILE = 'metadata/sonar.yaml'
+@Field String METADATA_FILE = 'metadata/sonarExecuteScan.yaml'
 
 void call(Map parameters = [:]) {
     handlePipelineStepErrors(stepName: STEP_NAME, stepParameters: parameters) {
@@ -55,21 +55,27 @@ void call(Map parameters = [:]) {
             }
             try {
                 // load certificates into cacerts file
-                loadCertificates(customTlsCertificateLinks: stepConfig.customTlsCertificateLinks, verbose: stepConfig.verbose)
+                if(script.env.PIPER_ENABLE_LEGACY_CERT_LOADING && Boolean.valueOf(script.env.PIPER_ENABLE_LEGACY_CERT_LOADING)){
+                    loadCertificates(customTlsCertificateLinks: stepConfig.customTlsCertificateLinks, verbose: stepConfig.verbose)
+                }
                 // execute step
                 piperExecuteBin.dockerWrapper(script, STEP_NAME, config){
                     if(!fileExists('.git')) utils.unstash('git')
                     piperExecuteBin.handleErrorDetails(STEP_NAME) {
                         writePipelineEnv(script: script, piperGoPath: piperGoPath)
-                        withSonarQubeEnv(stepConfig.instance) {
-                            withEnv(environment){
-                                influxWrapper(script){
-                                    piperExecuteBin.credentialWrapper(config, credentialInfo){
+                        withEnv(environment) {
+                            influxWrapper(script) {
+                                piperExecuteBin.credentialWrapper(config, credentialInfo) {
+                                    if (stepConfig.instance) {
+                                        withSonarQubeEnv(stepConfig.instance) {
+                                            echo "Instance is deprecated - please use serverUrl parameter to set URL to the Sonar backend."
+                                            sh "${piperGoPath} ${STEP_NAME}${customDefaultConfig}${customConfigArg}"
+                                            jenkinsUtils.handleStepResults(STEP_NAME, false, false)
+                                            readPipelineEnv(script: script, piperGoPath: piperGoPath)
+                                        }
+                                    } else {
                                         sh "${piperGoPath} ${STEP_NAME}${customDefaultConfig}${customConfigArg}"
-                                        archiveArtifacts artifacts: "sonarscan.json", allowEmptyArchive: true
                                     }
-                                    jenkinsUtils.handleStepResults(STEP_NAME, false, false)
-                                    readPipelineEnv(script: script, piperGoPath: piperGoPath)
                                 }
                             }
                         }

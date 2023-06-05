@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 
-	"github.com/SAP/jenkins-library/pkg/http"
+	piperhttp "github.com/SAP/jenkins-library/pkg/http"
 	"github.com/SAP/jenkins-library/pkg/log"
 
 	"github.com/ghodss/yaml"
@@ -26,7 +29,8 @@ type Config struct {
 	Hooks            map[string]interface{}            `json:"hooks,omitempty"`
 	defaults         PipelineDefaults
 	initialized      bool
-	openFile         func(s string) (io.ReadCloser, error)
+	accessTokens     map[string]string
+	openFile         func(s string, t map[string]string) (io.ReadCloser, error)
 	vaultCredentials VaultCredentials
 }
 
@@ -141,13 +145,13 @@ func (c *Config) InitializeConfig(configuration io.ReadCloser, defaults []io.Rea
 
 	// consider custom defaults defined in config.yml unless told otherwise
 	if ignoreCustomDefaults {
-		log.Entry().Info("Ignoring custom defaults from pipeline config")
+		log.Entry().Debug("Ignoring custom defaults from pipeline config")
 	} else if c.CustomDefaults != nil && len(c.CustomDefaults) > 0 {
 		if c.openFile == nil {
 			c.openFile = OpenPiperFile
 		}
 		for _, f := range c.CustomDefaults {
-			fc, err := c.openFile(f)
+			fc, err := c.openFile(f, c.accessTokens)
 			if err != nil {
 				return errors.Wrapf(err, "getting default '%v' failed", f)
 			}
@@ -163,7 +167,11 @@ func (c *Config) InitializeConfig(configuration io.ReadCloser, defaults []io.Rea
 }
 
 // GetStepConfig provides merged step configuration using defaults, config, if available
-func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON string, configuration io.ReadCloser, defaults []io.ReadCloser, ignoreCustomDefaults bool, filters StepFilters, parameters []StepParameters, secrets []StepSecrets, envParameters map[string]interface{}, stageName, stepName string, stepAliases []Alias) (StepConfig, error) {
+func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON string, configuration io.ReadCloser, defaults []io.ReadCloser, ignoreCustomDefaults bool, filters StepFilters, metadata StepData, envParameters map[string]interface{}, stageName, stepName string) (StepConfig, error) {
+	parameters := metadata.Spec.Inputs.Parameters
+	secrets := metadata.Spec.Inputs.Secrets
+	stepAliases := metadata.Metadata.Aliases
+
 	var stepConfig StepConfig
 	var err error
 
@@ -181,6 +189,7 @@ func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON stri
 
 	// merge parameters provided by Piper environment
 	stepConfig.mixIn(envParameters, filters.All)
+	stepConfig.mixIn(envParameters, ReportingParameters.getReportingFilter())
 
 	// read defaults & merge general -> steps (-> general -> steps ...)
 	for _, def := range c.defaults.Defaults {
@@ -188,7 +197,14 @@ func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON stri
 		stepConfig.mixIn(def.General, filters.General)
 		stepConfig.mixIn(def.Steps[stepName], filters.Steps)
 		stepConfig.mixIn(def.Stages[stageName], filters.Steps)
-		stepConfig.mixinVaultConfig(def.General, def.Steps[stepName], def.Stages[stageName])
+		stepConfig.mixinVaultConfig(parameters, def.General, def.Steps[stepName], def.Stages[stageName])
+		reportingConfig, err := cloneConfig(&def)
+		if err != nil {
+			return StepConfig{}, err
+		}
+		reportingConfig.ApplyAliasConfig(ReportingParameters.Parameters, []StepSecrets{}, ReportingParameters.getStepFilters(), stageName, stepName, []Alias{})
+		stepConfig.mixinReportingConfig(reportingConfig.General, reportingConfig.Steps[stepName], reportingConfig.Stages[stageName])
+
 		stepConfig.mixInHookConfig(def.Hooks)
 	}
 
@@ -207,7 +223,7 @@ func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON stri
 		if err != nil {
 			log.Entry().Warnf("failed to parse parameters from environment: %v", err)
 		} else {
-			//apply aliases
+			// apply aliases
 			for _, p := range parameters {
 				params = setParamValueFromAlias(stepName, params, filters.Parameters, p.Name, p.Aliases)
 			}
@@ -230,7 +246,15 @@ func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON stri
 		log.Entry().Warnf("invalid value for parameter verbose: '%v'", stepConfig.Config["verbose"])
 	}
 
-	stepConfig.mixinVaultConfig(c.General, c.Steps[stepName], c.Stages[stageName])
+	stepConfig.mixinVaultConfig(parameters, c.General, c.Steps[stepName], c.Stages[stageName])
+
+	reportingConfig, err := cloneConfig(c)
+	if err != nil {
+		return StepConfig{}, err
+	}
+	reportingConfig.ApplyAliasConfig(ReportingParameters.Parameters, []StepSecrets{}, ReportingParameters.getStepFilters(), stageName, stepName, []Alias{})
+	stepConfig.mixinReportingConfig(reportingConfig.General, reportingConfig.Steps[stepName], reportingConfig.Stages[stageName])
+
 	// check whether vault should be skipped
 	if skip, ok := stepConfig.Config["skipVault"].(bool); !ok || !skip {
 		// fetch secrets from vault
@@ -240,8 +264,9 @@ func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON stri
 		}
 		if vaultClient != nil {
 			defer vaultClient.MustRevokeToken()
-			resolveAllVaultReferences(&stepConfig, vaultClient, parameters)
-			resolveVaultTestCredentials(&stepConfig, vaultClient)
+			resolveAllVaultReferences(&stepConfig, vaultClient, append(parameters, ReportingParameters.Parameters...))
+			resolveVaultTestCredentialsWrapper(&stepConfig, vaultClient)
+			resolveVaultCredentialsWrapper(&stepConfig, vaultClient)
 		}
 	}
 
@@ -269,7 +294,7 @@ func (c *Config) GetStepConfig(flagValues map[string]interface{}, paramJSON stri
 }
 
 // SetVaultCredentials sets the appRoleID and the appRoleSecretID or the vaultTokento load additional
-//configuration from vault
+// configuration from vault
 // Either appRoleID and appRoleSecretID or vaultToken must be specified.
 func (c *Config) SetVaultCredentials(appRoleID, appRoleSecretID string, vaultToken string) {
 	c.vaultCredentials = VaultCredentials{
@@ -300,6 +325,18 @@ func GetStepConfigWithJSON(flagValues map[string]interface{}, stepConfigJSON str
 	return stepConfig
 }
 
+func (c *Config) GetStageConfig(paramJSON string, configuration io.ReadCloser, defaults []io.ReadCloser, ignoreCustomDefaults bool, acceptedParams []string, stageName string) (StepConfig, error) {
+
+	filters := StepFilters{
+		General:    acceptedParams,
+		Steps:      []string{},
+		Stages:     acceptedParams,
+		Parameters: acceptedParams,
+		Env:        []string{},
+	}
+	return c.GetStepConfig(map[string]interface{}{}, paramJSON, configuration, defaults, ignoreCustomDefaults, filters, StepData{}, map[string]interface{}{}, stageName, "")
+}
+
 // GetJSON returns JSON representation of an object
 func GetJSON(data interface{}) (string, error) {
 
@@ -310,15 +347,46 @@ func GetJSON(data interface{}) (string, error) {
 	return string(result), nil
 }
 
+// GetYAML returns YAML representation of an object
+func GetYAML(data interface{}) (string, error) {
+
+	result, err := yaml.Marshal(data)
+	if err != nil {
+		return "", errors.Wrapf(err, "error marshalling yaml: %v", err)
+	}
+	return string(result), nil
+}
+
 // OpenPiperFile provides functionality to retrieve configuration via file or http
-func OpenPiperFile(name string) (io.ReadCloser, error) {
+func OpenPiperFile(name string, accessTokens map[string]string) (io.ReadCloser, error) {
+	if len(name) == 0 {
+		return nil, errors.Wrap(os.ErrNotExist, "no filename provided")
+	}
+
 	if !strings.HasPrefix(name, "http://") && !strings.HasPrefix(name, "https://") {
 		return os.Open(name)
 	}
 
-	// support http(s) urls next to file path - url cannot be protected
-	client := http.Client{}
-	response, err := client.SendRequest("GET", name, nil, nil, nil)
+	return httpReadFile(name, accessTokens)
+}
+
+func httpReadFile(name string, accessTokens map[string]string) (io.ReadCloser, error) {
+
+	u, err := url.Parse(name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read url: %w", err)
+	}
+
+	// support http(s) urls next to file path
+	client := piperhttp.Client{}
+
+	var header http.Header
+	if len(accessTokens[u.Host]) > 0 {
+		client.SetOptions(piperhttp.ClientOptions{Token: fmt.Sprintf("token %v", accessTokens[u.Host])})
+		header = map[string][]string{"Accept": {"application/vnd.github.v3.raw"}}
+	}
+
+	response, err := client.SendRequest("GET", name, nil, header, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -441,9 +509,24 @@ func merge(base, overlay map[string]interface{}) map[string]interface{} {
 
 func sliceContains(slice []string, find string) bool {
 	for _, elem := range slice {
-		if elem == find {
+		matches, _ := regexp.MatchString(elem, find)
+		if matches {
 			return true
 		}
 	}
 	return false
+}
+
+func cloneConfig(config *Config) (*Config, error) {
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+
+	clone := &Config{}
+	if err = json.Unmarshal(configJSON, &clone); err != nil {
+		return nil, err
+	}
+
+	return clone, nil
 }

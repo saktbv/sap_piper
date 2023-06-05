@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/hashicorp/vault/api"
 
+	"github.com/SAP/jenkins-library/pkg/ado"
+	"github.com/SAP/jenkins-library/pkg/github"
 	"github.com/SAP/jenkins-library/pkg/jenkins"
 	"github.com/SAP/jenkins-library/pkg/vault"
 
@@ -46,7 +49,7 @@ func vaultRotateSecretId(config vaultRotateSecretIdOptions, telemetryData *telem
 	}
 	client, err := vault.NewClientWithAppRole(vaultConfig, GeneralConfig.VaultRoleID, GeneralConfig.VaultRoleSecretID)
 	if err != nil {
-		log.Entry().WithError(err).Fatal("could not create vault client")
+		log.Entry().WithError(err).Fatal("could not create Vault client")
 	}
 	defer client.MustRevokeToken()
 
@@ -67,7 +70,7 @@ func runVaultRotateSecretID(utils vaultRotateSecretIDUtils) error {
 
 	roleName, err := utils.GetAppRoleName()
 	if err != nil {
-		log.Entry().WithError(err).Warn("Could not fetch approle role name from vault. Secret ID rotation failed!")
+		log.Entry().WithError(err).Warn("Could not fetch Vault AppRole role name from Vault. Secret ID rotation failed!")
 		return nil
 	}
 
@@ -93,6 +96,7 @@ func runVaultRotateSecretID(utils vaultRotateSecretIDUtils) error {
 
 	if err = utils.UpdateSecretInStore(config, newSecretID); err != nil {
 		log.Entry().WithError(err).Warnf("Could not write secret back to secret store %s", config.SecretStore)
+		return err
 	}
 	log.Entry().Infof("Secret has been successfully updated in secret store %s", config.SecretStore)
 	return nil
@@ -105,12 +109,58 @@ func writeVaultSecretIDToStore(config *vaultRotateSecretIdOptions, secretID stri
 		ctx := context.Background()
 		instance, err := jenkins.Instance(ctx, &http.Client{}, config.JenkinsURL, config.JenkinsUsername, config.JenkinsToken)
 		if err != nil {
-			log.Entry().Warn("Could not write secret ID back to jenkins")
+			log.Entry().Warn("Could not write secret ID back to Jenkins")
 			return err
 		}
 		credManager := jenkins.NewCredentialsManager(instance)
 		credential := jenkins.StringCredentials{ID: config.VaultAppRoleSecretTokenCredentialsID, Secret: secretID}
 		return jenkins.UpdateCredential(ctx, credManager, config.JenkinsCredentialDomain, credential)
+	case "ado":
+		adoBuildClient, err := ado.NewBuildClient(config.AdoOrganization, config.AdoPersonalAccessToken, config.AdoProject, config.AdoPipelineID)
+		if err != nil {
+			log.Entry().Warn("Could not write secret ID back to Azure DevOps")
+			return err
+		}
+		variables := []ado.Variable{
+			{
+				Name:     config.VaultAppRoleSecretTokenCredentialsID,
+				Value:    secretID,
+				IsSecret: true,
+			},
+		}
+		if err := adoBuildClient.UpdateVariables(variables); err != nil {
+			log.Entry().Warn("Could not write secret ID back to Azure DevOps")
+			return err
+		}
+	case "github":
+		// Additional info:
+		// https://github.com/google/go-github/blob/master/example/newreposecretwithxcrypto/main.go
+
+		ctx, client, err := github.NewClient(config.GithubToken, config.GithubAPIURL, "", []string{})
+		if err != nil {
+			log.Entry().Warnf("Could not write secret ID back to GitHub Actions: GitHub client not created: %v", err)
+			return err
+		}
+
+		publicKey, _, err := client.Actions.GetRepoPublicKey(ctx, config.Owner, config.Repository)
+		if err != nil {
+			log.Entry().Warnf("Could not write secret ID back to GitHub Actions: repository's public key not retrieved: %v", err)
+			return err
+		}
+
+		encryptedSecret, err := github.CreateEncryptedSecret(config.VaultAppRoleSecretTokenCredentialsID, secretID, publicKey)
+		if err != nil {
+			log.Entry().Warnf("Could not write secret ID back to GitHub Actions: secret encryption failed: %v", err)
+			return err
+		}
+
+		_, err = client.Actions.CreateOrUpdateRepoSecret(ctx, config.Owner, config.Repository, encryptedSecret)
+		if err != nil {
+			log.Entry().Warnf("Could not write secret ID back to GitHub Actions: submission to GitHub failed: %v", err)
+			return err
+		}
+	default:
+		return fmt.Errorf("error: invalid secret store: %s", config.SecretStore)
 	}
 	return nil
 }

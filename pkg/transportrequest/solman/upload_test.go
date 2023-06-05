@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package solman
 
 import (
@@ -50,7 +53,6 @@ func TestSolmanUpload(t *testing.T) {
 					"--endpoint", "https://example.org/solman",
 					"--user", "me",
 					"--password", "******",
-					"--backend-type", "SOLMAN",
 					"upload-file-to-transport",
 					"-cID", "123456",
 					"-tID", "000K11111111",

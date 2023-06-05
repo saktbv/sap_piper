@@ -1,10 +1,12 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,10 +15,9 @@ import (
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func configOpenFileMock(name string) (io.ReadCloser, error) {
+func configOpenFileMock(name string, tokens map[string]string) (io.ReadCloser, error) {
 	var r string
 	switch name {
 	case "TestAddCustomDefaults_default1":
@@ -50,7 +51,7 @@ func TestConfigCommand(t *testing.T) {
 	})
 
 	t.Run("Optional flags", func(t *testing.T) {
-		exp := []string{"contextConfig", "output", "parametersJSON", "stepMetadata", "stepName"}
+		exp := []string{"contextConfig", "output", "outputFile", "parametersJSON", "stageConfig", "stageConfigAcceptedParams", "stepMetadata", "stepName"}
 		assert.Equal(t, exp, gotOpt, "optional flags incorrect")
 	})
 
@@ -295,10 +296,7 @@ func TestPrepareOutputEnvironment(t *testing.T) {
 		},
 	}
 
-	dir, tempDirErr := ioutil.TempDir("", "")
-	defer os.RemoveAll(dir)
-	require.NoError(t, tempDirErr)
-	require.DirExists(t, dir, "Failed to create temporary directory")
+	dir := t.TempDir()
 
 	prepareOutputEnvironment(outputResources, dir)
 	assert.DirExists(t, filepath.Join(dir, "commonPipelineEnvironment", "path1"))
@@ -310,26 +308,4 @@ func TestPrepareOutputEnvironment(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(dir, "commonPipelineEnvironment", "path2", "param2"))
 	assert.NoDirExists(t, filepath.Join(dir, "influx", "measurement0", "influx0_0"))
 	assert.NoDirExists(t, filepath.Join(dir, "influx", "measurement1", "influx0_1"))
-}
-
-func TestResolveMetadata(t *testing.T) {
-
-	t.Run("Succes - stepName", func(t *testing.T) {
-		configOptions.stepName = "githubCreateIssue"
-		stepData, err := resolveMetadata()
-		assert.NoError(t, err)
-		assert.Equal(t, "githubCreateIssue", stepData.Metadata.Name)
-	})
-
-	t.Run("Error - wrong stepName", func(t *testing.T) {
-		configOptions.stepName = "notExisting"
-		_, err := resolveMetadata()
-		assert.EqualError(t, err, "could not retrieve by stepName notExisting")
-	})
-
-	t.Run("Error - missing input", func(t *testing.T) {
-		configOptions.stepName = ""
-		_, err := resolveMetadata()
-		assert.EqualError(t, err, "either one of stepMetadata or stepName parameter has to be passed")
-	})
 }

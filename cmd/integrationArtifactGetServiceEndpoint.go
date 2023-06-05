@@ -7,41 +7,12 @@ import (
 	"strings"
 
 	"github.com/Jeffail/gabs/v2"
-	"github.com/SAP/jenkins-library/pkg/command"
 	"github.com/SAP/jenkins-library/pkg/cpi"
 	piperhttp "github.com/SAP/jenkins-library/pkg/http"
 	"github.com/SAP/jenkins-library/pkg/log"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
 	"github.com/pkg/errors"
 )
-
-type integrationArtifactGetServiceEndpointUtils interface {
-	command.ExecRunner
-
-	// Add more methods here, or embed additional interfaces, or remove/replace as required.
-	// The integrationArtifactGetServiceEndpointUtils interface should be descriptive of your runtime dependencies,
-	// i.e. include everything you need to be able to mock in tests.
-	// Unit tests shall be executable in parallel (not depend on global state), and don't (re-)test dependencies.
-}
-
-type integrationArtifactGetServiceEndpointUtilsBundle struct {
-	*command.Command
-
-	// Embed more structs as necessary to implement methods or interfaces you add to integrationArtifactGetServiceEndpointUtils.
-	// Structs embedded in this way must each have a unique set of methods attached.
-	// If there is no struct which implements the method you need, attach the method to
-	// integrationArtifactGetServiceEndpointUtilsBundle and forward to the implementation of the dependency.
-}
-
-func newIntegrationArtifactGetServiceEndpointUtils() integrationArtifactGetServiceEndpointUtils {
-	utils := integrationArtifactGetServiceEndpointUtilsBundle{
-		Command: &command.Command{},
-	}
-	// Reroute command output to logging framework
-	utils.Stdout(log.Writer())
-	utils.Stderr(log.Writer())
-	return &utils
-}
 
 func integrationArtifactGetServiceEndpoint(config integrationArtifactGetServiceEndpointOptions, telemetryData *telemetry.CustomData, commonPipelineEnvironment *integrationArtifactGetServiceEndpointCommonPipelineEnvironment) {
 	// Utils can be used wherever the command.ExecRunner interface is expected.
@@ -106,10 +77,12 @@ func runIntegrationArtifactGetServiceEndpoint(config *integrationArtifactGetServ
 			if iflowID == config.IntegrationFlowID {
 				entryPoints := child.S("EntryPoints")
 				finalEndpoint := entryPoints.Path("results.0.Url").Data().(string)
-				commonPipelineEnvironment.custom.iFlowServiceEndpoint = finalEndpoint
+				commonPipelineEnvironment.custom.integrationFlowServiceEndpoint = finalEndpoint
 				return nil
 			}
 		}
+		return errors.Errorf("Unable to get integration flow service endpoint '%v', Response body: %v, Response Status code: %v",
+			config.IntegrationFlowID, string(bodyText), serviceEndpointResp.StatusCode)
 	}
 	responseBody, readErr := ioutil.ReadAll(serviceEndpointResp.Body)
 
@@ -117,6 +90,6 @@ func runIntegrationArtifactGetServiceEndpoint(config *integrationArtifactGetServ
 		return errors.Wrapf(readErr, "HTTP response body could not be read, Response status code: %v", serviceEndpointResp.StatusCode)
 	}
 
-	log.Entry().Errorf("a HTTP error occurred!  Response body: %v, Response status code: %v", responseBody, serviceEndpointResp.StatusCode)
+	log.Entry().Errorf("a HTTP error occurred!  Response body: %v, Response status code: %v", string(responseBody), serviceEndpointResp.StatusCode)
 	return errors.Errorf("Unable to get integration flow service endpoint, Response Status code: %v", serviceEndpointResp.StatusCode)
 }

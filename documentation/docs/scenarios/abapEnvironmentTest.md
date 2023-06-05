@@ -16,9 +16,19 @@ The pipeline starts with the stage "Prepare System". This stage, however, is opt
 
 This stage is responsible for cloning (or pulling) the defined software components (repositories) to the system.
 
+### Run Tests
+
+This stage will trigger the execution of the `ATC` and `AUnit` stages in parallel. Please find more information on the respective stages below.
+
 ### ATC
 
-This stage runs ATC checks on the SAP BTP, ABAP environment system. The results are returned in the "CheckStyle" format. With the help of a stage extension, a plugin can be used to visualize the check results.
+In this stage, ATC checks can be executed using [abapEnvironmentRunATCCheck](https://sap.github.io/jenkins-library/steps/abapEnvironmentRunATCCheck/). The step can receive software components or packages.
+
+The results are returned in the checkstyle format and can be displayed using the [Warnings Next Generation Plugin](https://www.jenkins.io/doc/pipeline/steps/warnings-ng/#warnings-next-generation-plugin). To display the results it is necessary to [extend the ATC stage via the Checkstyle/Warnings Next Generation Plugin](https://www.project-piper.io/pipelines/abapEnvironment/extensibility/#1-extend-the-atc-stage-via-the-checkstylewarnings-next-generation-plugin).
+
+### AUnit
+
+This stage will triger an AUnit run on the SAP BTP, APAB environment system. You can configure the object set that should be checked during the AUnit run. The results of the test run are returned in the "JUnit" format. It is possible to further visualize the AUnit test run results with the help of a stage extension.
 
 ## Prerequisites
 
@@ -43,4 +53,8 @@ During the pipeline configuration, you will specify the service plan, which will
 
 ## Configuration
 
-Please refer to the [configuration page](../pipelines/abapEnvironment/configuration.md) or have a look at these examples: Running ATC checks on a [transient system](https://github.com/SAP-samples/abap-platform-ci-cd-samples/tree/atc-transient) or running ATC checks on a [static system](https://github.com/SAP-samples/abap-platform-ci-cd-samples/tree/atc-static).
+Please refer to the [configuration page](../pipelines/abapEnvironment/configuration.md).
+
+## Example
+
+Please have a look at the configuration examples to run ATC checks on a [transient system](https://github.com/SAP-samples/abap-platform-ci-cd-samples/tree/atc-transient) or on a [permanent system](https://github.com/SAP-samples/abap-platform-ci-cd-samples/tree/atc-static).

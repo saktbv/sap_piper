@@ -1,6 +1,10 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
+	"encoding/json"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -9,6 +13,24 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
+
+var executionLogStringCheckout string
+
+func init() {
+	executionLog := abaputils.LogProtocolResults{
+		Results: []abaputils.LogProtocol{
+			{
+				ProtocolLine:  1,
+				OverviewIndex: 1,
+				Type:          "LogEntry",
+				Description:   "S",
+				Timestamp:     "/Date(1644332299000+0000)/",
+			},
+		},
+	}
+	executionLogResponse, _ := json.Marshal(executionLog)
+	executionLogStringCheckout = string(executionLogResponse)
+}
 
 func TestCheckoutBranchStep(t *testing.T) {
 	t.Run("Run Step Successful - repositoryName and branchName config", func(t *testing.T) {
@@ -32,8 +54,12 @@ func TestCheckoutBranchStep(t *testing.T) {
 			BranchName:        "testBranch",
 		}
 
+		logResultSuccess := `{"d": { "sc_name": "/DMO/SWC", "status": "S", "to_Log_Overview": { "results": [ { "log_index": 1, "log_name": "Main Import", "type_of_found_issues": "Success", "timestamp": "/Date(1644332299000+0000)/", "to_Log_Protocol": { "results": [ { "log_index": 1, "index_no": "1", "log_name": "", "type": "Info", "descr": "Main import", "timestamp": null, "criticality": 0 } ] } } ] } } }`
 		client := &abaputils.ClientMock{
 			BodyList: []string{
+				`{"d" : [] }`,
+				`{"d" : ` + executionLogStringCheckout + `}`,
+				logResultSuccess,
 				`{"d" : { "status" : "S" } }`,
 				`{"d" : { "status" : "S" } }`,
 				`{"d" : { "status" : "S" } }`,
@@ -42,7 +68,7 @@ func TestCheckoutBranchStep(t *testing.T) {
 			StatusCode: 200,
 		}
 
-		err := runAbapEnvironmentCheckoutBranch(&config, nil, &autils, client)
+		err := runAbapEnvironmentCheckoutBranch(&config, &autils, client)
 		assert.NoError(t, err, "Did not expect error")
 	})
 	t.Run("Run Step Failure - empty config", func(t *testing.T) {
@@ -57,8 +83,12 @@ func TestCheckoutBranchStep(t *testing.T) {
 
 		config := abapEnvironmentCheckoutBranchOptions{}
 
+		logResultError := `{"d": { "sc_name": "/DMO/SWC", "status": "S", "to_Log_Overview": { "results": [ { "log_index": 1, "log_name": "Main Import", "type_of_found_issues": "Error", "timestamp": "/Date(1644332299000+0000)/", "to_Log_Protocol": { "results": [ { "log_index": 1, "index_no": "1", "log_name": "", "type": "Info", "descr": "Main import", "timestamp": null, "criticality": 0 } ] } } ] } } }`
 		client := &abaputils.ClientMock{
 			BodyList: []string{
+				`{"d" : [] }`,
+				`{"d" : ` + executionLogStringCheckout + `}`,
+				logResultError,
 				`{"d" : { "status" : "E" } }`,
 				`{"d" : { "status" : "E" } }`,
 				`{"d" : { "status" : "E" } }`,
@@ -67,7 +97,7 @@ func TestCheckoutBranchStep(t *testing.T) {
 			StatusCode: 200,
 		}
 
-		err := runAbapEnvironmentCheckoutBranch(&config, nil, &autils, client)
+		err := runAbapEnvironmentCheckoutBranch(&config, &autils, client)
 		assert.EqualError(t, err, expectedErrorMessage)
 	})
 	t.Run("Run Step Failure - wrong status", func(t *testing.T) {
@@ -92,8 +122,12 @@ func TestCheckoutBranchStep(t *testing.T) {
 			BranchName:        "testBranch",
 		}
 
+		logResultError := `{"d": { "sc_name": "/DMO/SWC", "status": "S", "to_Log_Overview": { "results": [ { "log_index": 1, "log_name": "Main Import", "type_of_found_issues": "Error", "timestamp": "/Date(1644332299000+0000)/", "to_Log_Protocol": { "results": [ { "log_index": 1, "index_no": "1", "log_name": "", "type": "Info", "descr": "Main import", "timestamp": null, "criticality": 0 } ] } } ] } } }`
 		client := &abaputils.ClientMock{
 			BodyList: []string{
+				`{"d" : [] }`,
+				`{"d" : ` + executionLogStringCheckout + `}`,
+				logResultError,
 				`{"d" : { "status" : "E" } }`,
 				`{"d" : { "status" : "E" } }`,
 				`{"d" : { "status" : "E" } }`,
@@ -102,7 +136,7 @@ func TestCheckoutBranchStep(t *testing.T) {
 			StatusCode: 200,
 		}
 
-		err := runAbapEnvironmentCheckoutBranch(&config, nil, &autils, client)
+		err := runAbapEnvironmentCheckoutBranch(&config, &autils, client)
 		assert.EqualError(t, err, expectedErrorMessage)
 	})
 	t.Run("Success case: checkout Branches from file config", func(t *testing.T) {
@@ -120,17 +154,13 @@ func TestCheckoutBranchStep(t *testing.T) {
 			StatusCode: 200,
 		}
 
-		dir, err := ioutil.TempDir("", "test checkout branches")
-		if err != nil {
-			t.Fatal("Failed to create temporary directory")
-		}
+		dir := t.TempDir()
 		oldCWD, _ := os.Getwd()
 		_ = os.Chdir(dir)
 		// clean up tmp dir
 
 		defer func() {
 			_ = os.Chdir(oldCWD)
-			_ = os.RemoveAll(dir)
 		}()
 
 		manifestFileString := `
@@ -142,7 +172,7 @@ repositories:
 - name: 'testRepo3'
   branch: 'testBranch3'`
 
-		err = ioutil.WriteFile("repositoriesTest.yml", []byte(manifestFileString), 0644)
+		err := ioutil.WriteFile("repositoriesTest.yml", []byte(manifestFileString), 0644)
 
 		config := abapEnvironmentCheckoutBranchOptions{
 			CfAPIEndpoint:     "https://api.endpoint.com",
@@ -154,7 +184,7 @@ repositories:
 			Password:          "testPassword",
 			Repositories:      "repositoriesTest.yml",
 		}
-		err = runAbapEnvironmentCheckoutBranch(&config, nil, &autils, client)
+		err = runAbapEnvironmentCheckoutBranch(&config, &autils, client)
 		assert.NoError(t, err)
 	})
 	t.Run("Failure case: checkout Branches from empty file config", func(t *testing.T) {
@@ -174,22 +204,18 @@ repositories:
 			StatusCode: 200,
 		}
 
-		dir, err := ioutil.TempDir("", "test checkout branches")
-		if err != nil {
-			t.Fatal("Failed to create temporary directory")
-		}
+		dir := t.TempDir()
 		oldCWD, _ := os.Getwd()
 		_ = os.Chdir(dir)
 		// clean up tmp dir
 		defer func() {
 			_ = os.Chdir(oldCWD)
-			_ = os.RemoveAll(dir)
 		}()
 
 		manifestFileString := ``
 
 		manifestFileStringBody := []byte(manifestFileString)
-		err = ioutil.WriteFile("repositoriesTest.yml", manifestFileStringBody, 0644)
+		err := ioutil.WriteFile("repositoriesTest.yml", manifestFileStringBody, 0644)
 
 		config := abapEnvironmentCheckoutBranchOptions{
 			CfAPIEndpoint:     "https://api.endpoint.com",
@@ -201,7 +227,7 @@ repositories:
 			Password:          "testPassword",
 			Repositories:      "repositoriesTest.yml",
 		}
-		err = runAbapEnvironmentCheckoutBranch(&config, nil, &autils, client)
+		err = runAbapEnvironmentCheckoutBranch(&config, &autils, client)
 		assert.EqualError(t, err, expectedErrorMessage)
 	})
 	t.Run("Failure case: checkout Branches from wrong file config", func(t *testing.T) {
@@ -224,16 +250,12 @@ repositories:
 			StatusCode: 200,
 		}
 
-		dir, err := ioutil.TempDir("", "test checkout branches")
-		if err != nil {
-			t.Fatal("Failed to create temporary directory")
-		}
+		dir := t.TempDir()
 		oldCWD, _ := os.Getwd()
 		_ = os.Chdir(dir)
 		// clean up tmp dir
 		defer func() {
 			_ = os.Chdir(oldCWD)
-			_ = os.RemoveAll(dir)
 		}()
 
 		manifestFileString := `
@@ -241,7 +263,7 @@ repositories:
 - repo: 'testRepo2'`
 
 		manifestFileStringBody := []byte(manifestFileString)
-		err = ioutil.WriteFile("repositoriesTest.yml", manifestFileStringBody, 0644)
+		err := ioutil.WriteFile("repositoriesTest.yml", manifestFileStringBody, 0644)
 
 		config := abapEnvironmentCheckoutBranchOptions{
 			CfAPIEndpoint:     "https://api.endpoint.com",
@@ -253,7 +275,7 @@ repositories:
 			Password:          "testPassword",
 			Repositories:      "repositoriesTest.yml",
 		}
-		err = runAbapEnvironmentCheckoutBranch(&config, nil, &autils, client)
+		err = runAbapEnvironmentCheckoutBranch(&config, &autils, client)
 		assert.EqualError(t, err, expectedErrorMessage)
 	})
 }
@@ -263,7 +285,7 @@ func TestTriggerCheckout(t *testing.T) {
 
 		// given
 		receivedURI := "example.com/Branches"
-		uriExpected := receivedURI + "?$expand=to_Execution_log,to_Transport_log"
+		uriExpected := receivedURI
 		tokenExpected := "myToken"
 
 		client := &abaputils.ClientMock{

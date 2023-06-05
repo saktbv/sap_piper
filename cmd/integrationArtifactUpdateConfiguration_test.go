@@ -1,22 +1,13 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
 	"testing"
 
-	"github.com/SAP/jenkins-library/pkg/mock"
 	"github.com/stretchr/testify/assert"
 )
-
-type integrationArtifactUpdateConfigurationMockUtils struct {
-	*mock.ExecMockRunner
-}
-
-func newIntegrationArtifactUpdateConfigurationTestsUtils() integrationArtifactUpdateConfigurationMockUtils {
-	utils := integrationArtifactUpdateConfigurationMockUtils{
-		ExecMockRunner: &mock.ExecMockRunner{},
-	}
-	return utils
-}
 
 func TestRunIntegrationArtifactUpdateConfiguration(t *testing.T) {
 	t.Parallel()

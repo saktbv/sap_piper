@@ -1,13 +1,19 @@
 package piperutils
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar"
 )
@@ -15,21 +21,42 @@ import (
 // FileUtils ...
 type FileUtils interface {
 	Abs(path string) (string, error)
+	DirExists(path string) (bool, error)
 	FileExists(filename string) (bool, error)
 	Copy(src, dest string) (int64, error)
+	Move(src, dest string) error
 	FileRead(path string) ([]byte, error)
+	ReadFile(path string) ([]byte, error)
 	FileWrite(path string, content []byte, perm os.FileMode) error
+	WriteFile(path string, content []byte, perm os.FileMode) error
+	FileRemove(path string) error
 	MkdirAll(path string, perm os.FileMode) error
 	Chmod(path string, mode os.FileMode) error
 	Glob(pattern string) (matches []string, err error)
+	Chdir(path string) error
+	TempDir(string, string) (string, error)
+	RemoveAll(string) error
+	FileRename(string, string) error
+	Getwd() (string, error)
+	Symlink(oldname string, newname string) error
+	SHA256(path string) (string, error)
+	CurrentTime(format string) string
+	Open(name string) (io.ReadWriteCloser, error)
+	Create(name string) (io.ReadWriteCloser, error)
 }
 
 // Files ...
-type Files struct {
-}
+type Files struct{}
 
 // TempDir creates a temporary directory
 func (f Files) TempDir(dir, pattern string) (name string, err error) {
+	if len(dir) == 0 {
+		// lazy init system temp dir in case it doesn't exist
+		if exists, _ := f.DirExists(os.TempDir()); !exists {
+			f.MkdirAll(os.TempDir(), 0o666)
+		}
+	}
+
 	return ioutil.TempDir(dir, pattern)
 }
 
@@ -68,9 +95,7 @@ func (f Files) DirExists(path string) (bool, error) {
 
 // Copy ...
 func (f Files) Copy(src, dst string) (int64, error) {
-
 	exists, err := f.FileExists(src)
-
 	if err != nil {
 		return 0, err
 	}
@@ -89,12 +114,33 @@ func (f Files) Copy(src, dst string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	stats, err := os.Stat(src)
+	if err != nil {
+		return 0, err
+	}
+
+	os.Chmod(dst, stats.Mode())
 	defer func() { _ = destination.Close() }()
 	nBytes, err := CopyData(destination, source)
 	return nBytes, err
 }
 
-//Chmod is a wrapper for os.Chmod().
+// Move will move files from src to dst
+func (f Files) Move(src, dst string) error {
+	if exists, err := f.FileExists(src); err != nil {
+		return err
+	} else if !exists {
+		return fmt.Errorf("file doesn't exist: %s", src)
+	}
+
+	if _, err := f.Copy(src, dst); err != nil {
+		return err
+	}
+
+	return f.FileRemove(src)
+}
+
+// Chmod is a wrapper for os.Chmod().
 func (f Files) Chmod(path string, mode os.FileMode) error {
 	return os.Chmod(path, mode)
 }
@@ -104,7 +150,7 @@ func (f Files) Chmod(path string, mode os.FileMode) error {
 // from https://golangcode.com/unzip-files-in-go/ with the following license:
 // MIT License
 //
-// Copyright (c) 2017 Edd Turtle
+// # Copyright (c) 2017 Edd Turtle
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -124,7 +170,6 @@ func (f Files) Chmod(path string, mode os.FileMode) error {
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 func Unzip(src, dest string) ([]string, error) {
-
 	var filenames []string
 
 	r, err := zip.OpenReader(src)
@@ -182,19 +227,160 @@ func Unzip(src, dest string) ([]string, error) {
 	return filenames, nil
 }
 
+// Untar will decompress a gzipped archive and then untar it, moving all files and folders
+// within the tgz file (parameter 1) to an output directory (parameter 2).
+// some tar like the one created from npm have an addtional package folder which need to be removed during untar
+// stripComponent level acts the same like in the tar cli with level 1 corresponding to elimination of parent folder
+// stripComponentLevel = 1 -> parentFolder/someFile.Txt -> someFile.Txt
+// stripComponentLevel = 2 -> parentFolder/childFolder/someFile.Txt -> someFile.Txt
+// when stripCompenent in 0 the untar will retain the original tar folder structure
+// when stripCompmenet is greater than 0 the expectation is all files must be under that level folder and if not there is a hard check and failure condition
+func Untar(src string, dest string, stripComponentLevel int) error {
+	file, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("unable to open src: %v", err)
+	}
+	defer file.Close()
+
+	if b, err := isFileGzipped(src); err == nil && b {
+		zr, err := gzip.NewReader(file)
+		if err != nil {
+			return fmt.Errorf("requires gzip-compressed body: %v", err)
+		}
+
+		return untar(zr, dest, stripComponentLevel)
+	}
+
+	return untar(file, dest, stripComponentLevel)
+}
+
+func untar(r io.Reader, dir string, level int) (err error) {
+	madeDir := map[string]bool{}
+
+	tr := tar.NewReader(r)
+	for {
+		f, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar error: %v", err)
+		}
+		if strings.HasPrefix(f.Name, "/") {
+			f.Name = fmt.Sprintf(".%s", f.Name)
+		}
+		if !validRelPath(f.Name) { // blocks path traversal attacks
+			return fmt.Errorf("tar contained invalid name error %q", f.Name)
+		}
+		rel := filepath.FromSlash(f.Name)
+
+		// when level X folder(s) needs to be removed we first check that the rel path must have atleast X or greater than X pathseperatorserr
+		// or else we might end in index out of range
+		if level > 0 {
+			if strings.Count(rel, string(os.PathSeparator)) >= level {
+				relSplit := strings.SplitN(rel, string(os.PathSeparator), level+1)
+				rel = relSplit[level]
+			} else {
+				return fmt.Errorf("files %q in tarball archive not under level %v", f.Name, level)
+			}
+		}
+
+		abs := filepath.Join(dir, rel)
+
+		fi := f.FileInfo()
+		mode := fi.Mode()
+		switch {
+		case mode.IsRegular():
+			// Make the directory. This is redundant because it should
+			// already be made by a directory entry in the tar
+			// beforehand. Thus, don't check for errors; the next
+			// write will fail with the same error.
+			dir := filepath.Dir(abs)
+			if !madeDir[dir] {
+				if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+					return err
+				}
+				madeDir[dir] = true
+			}
+			wf, err := os.OpenFile(abs, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode.Perm())
+			if err != nil {
+				return err
+			}
+			n, err := io.Copy(wf, tr)
+			if closeErr := wf.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return fmt.Errorf("error writing to %s: %v", abs, err)
+			}
+			if n != f.Size {
+				return fmt.Errorf("only wrote %d bytes to %s; expected %d", n, abs, f.Size)
+			}
+		case mode.IsDir():
+			if err := os.MkdirAll(abs, 0o755); err != nil {
+				return err
+			}
+			madeDir[abs] = true
+		case mode&fs.ModeSymlink != 0:
+			if err := os.Symlink(f.Linkname, abs); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("tar file entry %s contained unsupported file type %v", f.Name, mode)
+		}
+	}
+	return nil
+}
+
+// isFileGzipped checks the first 3 bytes of the given file to determine if it is gzipped or not. Returns `true` if the file is gzipped.
+func isFileGzipped(file string) (bool, error) {
+	f, err := os.Open(file)
+	defer f.Close()
+
+	if err != nil {
+		return false, err
+	}
+
+	b := make([]byte, 3)
+	_, err = io.ReadFull(f, b)
+
+	if err != nil {
+		return false, err
+	}
+
+	return b[0] == 0x1f && b[1] == 0x8b && b[2] == 8, nil
+}
+
+func validRelPath(p string) bool {
+	if p == "" || strings.Contains(p, `\`) || strings.HasPrefix(p, "/") || strings.Contains(p, "../") {
+		return false
+	}
+	return true
+}
+
 // Copy ...
 func Copy(src, dst string) (int64, error) {
 	return Files{}.Copy(src, dst)
 }
 
-// FileRead is a wrapper for ioutil.ReadFile().
+// FileRead is a wrapper for os.ReadFile().
 func (f Files) FileRead(path string) ([]byte, error) {
-	return ioutil.ReadFile(path)
+	return os.ReadFile(path)
 }
 
-// FileWrite is a wrapper for ioutil.WriteFile().
+// ReadFile is a wrapper for os.ReadFile() using the same name and syntax.
+func (f Files) ReadFile(path string) ([]byte, error) {
+	return f.FileRead(path)
+}
+
+// FileWrite is a wrapper for os.WriteFile().
 func (f Files) FileWrite(path string, content []byte, perm os.FileMode) error {
-	return ioutil.WriteFile(path, content, perm)
+	return os.WriteFile(path, content, perm)
+}
+
+// WriteFile is a wrapper for os.ReadFile() using the same name and syntax.
+func (f Files) WriteFile(path string, content []byte, perm os.FileMode) error {
+	return f.FileWrite(path, content, perm)
 }
 
 // FileRemove is a wrapper for os.Remove().
@@ -274,4 +460,45 @@ func (f Files) Stat(path string) (os.FileInfo, error) {
 // Abs is a wrapper for filepath.Abs()
 func (f Files) Abs(path string) (string, error) {
 	return filepath.Abs(path)
+}
+
+// Symlink is a wrapper for os.Symlink
+func (f Files) Symlink(oldname, newname string) error {
+	return os.Symlink(oldname, newname)
+}
+
+// SHA256 computes a SHA256 for a given file
+func (f Files) SHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	_, err = io.Copy(hash, file)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%x", string(hash.Sum(nil))), nil
+}
+
+// CurrentTime returns the current time in the specified format
+func (f Files) CurrentTime(format string) string {
+	fString := format
+	if len(format) == 0 {
+		fString = "20060102-150405"
+	}
+	return fmt.Sprint(time.Now().Format(fString))
+}
+
+// Open is a wrapper for os.Open
+func (f Files) Open(name string) (io.ReadWriteCloser, error) {
+	return os.Open(name)
+}
+
+// Create is a wrapper for os.Create
+func (f Files) Create(name string) (io.ReadWriteCloser, error) {
+	return os.Create(name)
 }

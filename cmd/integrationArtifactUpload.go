@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/Jeffail/gabs/v2"
-	"github.com/SAP/jenkins-library/pkg/command"
 	"github.com/SAP/jenkins-library/pkg/cpi"
 	piperhttp "github.com/SAP/jenkins-library/pkg/http"
 	"github.com/SAP/jenkins-library/pkg/log"
@@ -17,34 +16,6 @@ import (
 	"github.com/SAP/jenkins-library/pkg/telemetry"
 	"github.com/pkg/errors"
 )
-
-type integrationArtifactUploadUtils interface {
-	command.ExecRunner
-
-	// Add more methods here, or embed additional interfaces, or remove/replace as required.
-	// The integrationArtifactUploadUtils interface should be descriptive of your runtime dependencies,
-	// i.e. include everything you need to be able to mock in tests.
-	// Unit tests shall be executable in parallel (not depend on global state), and don't (re-)test dependencies.
-}
-
-type integrationArtifactUploadUtilsBundle struct {
-	*command.Command
-
-	// Embed more structs as necessary to implement methods or interfaces you add to integrationArtifactUploadUtils.
-	// Structs embedded in this way must each have a unique set of methods attached.
-	// If there is no struct which implements the method you need, attach the method to
-	// integrationArtifactUploadUtilsBundle and forward to the implementation of the dependency.
-}
-
-func newIntegrationArtifactUploadUtils() integrationArtifactUploadUtils {
-	utils := integrationArtifactUploadUtilsBundle{
-		Command: &command.Command{},
-	}
-	// Reroute command output to logging framework
-	utils.Stdout(log.Writer())
-	utils.Stderr(log.Writer())
-	return &utils
-}
 
 func integrationArtifactUpload(config integrationArtifactUploadOptions, telemetryData *telemetry.CustomData) {
 	// Utils can be used wherever the command.ExecRunner interface is expected.
@@ -73,7 +44,7 @@ func runIntegrationArtifactUpload(config *integrationArtifactUploadOptions, tele
 	clientOptions := piperhttp.ClientOptions{}
 	header := make(http.Header)
 	header.Add("Accept", "application/json")
-	iFlowStatusServiceURL := fmt.Sprintf("%s/api/v1/IntegrationDesigntimeArtifacts(Id='%s',Version='%s')", serviceKey.OAuth.Host, config.IntegrationFlowID, config.IntegrationFlowVersion)
+	iFlowStatusServiceURL := fmt.Sprintf("%s/api/v1/IntegrationDesigntimeArtifacts(Id='%s',Version='%s')", serviceKey.OAuth.Host, config.IntegrationFlowID, "Active")
 	tokenParameters := cpi.TokenParameters{TokenURL: serviceKey.OAuth.OAuthTokenProviderURL, Username: serviceKey.OAuth.ClientID, Password: serviceKey.OAuth.ClientSecret, Client: httpClient}
 	token, err := cpi.CommonUtils.GetBearerToken(tokenParameters)
 	if err != nil {
@@ -110,7 +81,7 @@ func runIntegrationArtifactUpload(config *integrationArtifactUploadOptions, tele
 	return errors.Errorf("Failed to check integration flow availability, Response Status code: %v", iFlowStatusResp.StatusCode)
 }
 
-//UploadIntegrationArtifact - Upload new integration artifact
+// UploadIntegrationArtifact - Upload new integration artifact
 func UploadIntegrationArtifact(config *integrationArtifactUploadOptions, httpClient piperhttp.Sender, fileUtils piperutils.FileUtils, apiHost string) error {
 	httpMethod := "POST"
 	uploadIflowStatusURL := fmt.Sprintf("%s/api/v1/IntegrationDesigntimeArtifacts", apiHost)
@@ -148,12 +119,12 @@ func UploadIntegrationArtifact(config *integrationArtifactUploadOptions, httpCli
 	return errors.Errorf("Failed to create Integration Flow artefact, Response Status code: %v", uploadIflowStatusResp.StatusCode)
 }
 
-//UpdateIntegrationArtifact - Update existing integration artifact
+// UpdateIntegrationArtifact - Update existing integration artifact
 func UpdateIntegrationArtifact(config *integrationArtifactUploadOptions, httpClient piperhttp.Sender, fileUtils piperutils.FileUtils, apiHost string) error {
-	httpMethod := "POST"
+	httpMethod := "PUT"
 	header := make(http.Header)
 	header.Add("content-type", "application/json")
-	updateIflowStatusURL := fmt.Sprintf("%s/api/v1/IntegrationDesigntimeArtifactSaveAsVersion?Id='%s'&SaveAsVersion='%s'", apiHost, config.IntegrationFlowID, config.IntegrationFlowVersion)
+	updateIflowStatusURL := fmt.Sprintf("%s/api/v1/IntegrationDesigntimeArtifacts(Id='%s',Version='%s')", apiHost, config.IntegrationFlowID, "Active")
 	payload, jsonError := GetJSONPayloadAsByteArray(config, "update", fileUtils)
 	if jsonError != nil {
 		return errors.Wrapf(jsonError, "Failed to get json payload for file %v, failed with error", config.FilePath)
@@ -179,13 +150,13 @@ func UpdateIntegrationArtifact(config *integrationArtifactUploadOptions, httpCli
 		if readErr != nil {
 			return errors.Wrapf(readErr, "HTTP response body could not be read, Response status code: %v", updateIflowStatusResp.StatusCode)
 		}
-		log.Entry().Errorf("a HTTP error occurred! Response body: %v, Response status code: %v", responseBody, updateIflowStatusResp.StatusCode)
+		log.Entry().Errorf("a HTTP error occurred! Response body: %v, Response status code: %v", string(responseBody), updateIflowStatusResp.StatusCode)
 		return errors.Wrapf(httpErr, "HTTP %v request to %v failed with error: %v", httpMethod, updateIflowStatusURL, string(responseBody))
 	}
 	return errors.Errorf("Failed to update Integration Flow artefact, Response Status code: %v", updateIflowStatusResp.StatusCode)
 }
 
-//GetJSONPayloadAsByteArray -return http payload as byte array
+// GetJSONPayloadAsByteArray -return http payload as byte array
 func GetJSONPayloadAsByteArray(config *integrationArtifactUploadOptions, mode string, fileUtils piperutils.FileUtils) (*bytes.Buffer, error) {
 	fileContent, readError := fileUtils.FileRead(config.FilePath)
 	if readError != nil {
@@ -193,11 +164,12 @@ func GetJSONPayloadAsByteArray(config *integrationArtifactUploadOptions, mode st
 	}
 	jsonObj := gabs.New()
 	if mode == "create" {
-		jsonObj.Set(config.IntegrationFlowID, "Name")
+		jsonObj.Set(config.IntegrationFlowName, "Name")
 		jsonObj.Set(config.IntegrationFlowID, "Id")
 		jsonObj.Set(config.PackageID, "PackageId")
 		jsonObj.Set(b64.StdEncoding.EncodeToString(fileContent), "ArtifactContent")
 	} else if mode == "update" {
+		jsonObj.Set(config.IntegrationFlowName, "Name")
 		jsonObj.Set(b64.StdEncoding.EncodeToString(fileContent), "ArtifactContent")
 	} else {
 		return nil, fmt.Errorf("Unkown node: '%s'", mode)

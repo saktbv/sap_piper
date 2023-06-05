@@ -10,10 +10,17 @@ import (
 	"github.com/pkg/errors"
 )
 
+// IssueDetail represents any content that can be transformed into the body of a GitHub issue
+type IssueDetail interface {
+	Title() string
+	ToMarkdown() ([]byte, error)
+	ToTxt() string
+}
+
 // ScanReport defines the elements of a scan report used by various scan steps
 type ScanReport struct {
 	StepName       string          `json:"stepName"`
-	Title          string          `json:"title"`
+	ReportTitle    string          `json:"title"`
 	Subheaders     []Subheader     `json:"subheaders"`
 	Overview       []OverviewRow   `json:"overview"`
 	FurtherInfo    string          `json:"furtherInfo"`
@@ -85,12 +92,18 @@ func (s *ScanReport) AddSubHeader(header, details string) {
 	s.Subheaders = append(s.Subheaders, Subheader{Description: header, Details: details})
 }
 
-//StepReportDirectory specifies the default directory for markdown reports which can later be collected by step pipelineCreateSummary
+// StepReportDirectory specifies the default directory for markdown reports which can later be collected by step pipelineCreateSummary
 const StepReportDirectory = ".pipeline/stepReports"
 
 // ToJSON returns the report in JSON format
 func (s *ScanReport) ToJSON() ([]byte, error) {
 	return json.Marshal(s)
+}
+
+// ToTxt up to now returns the report in JSON format
+func (s ScanReport) ToTxt() string {
+	txt, _ := s.ToJSON()
+	return string(txt)
 }
 
 const reportHTMLTemplate = `<!DOCTYPE html>
@@ -266,8 +279,13 @@ Snapshot taken: <i>{{reportTime .ReportTime}}</i>
 
 `
 
+// Title returns the title of the report
+func (s ScanReport) Title() string {
+	return s.ReportTitle
+}
+
 // ToMarkdown creates a markdown version of the report content
-func (s *ScanReport) ToMarkdown() ([]byte, error) {
+func (s ScanReport) ToMarkdown() ([]byte, error) {
 	funcMap := template.FuncMap{
 		"columnCount":     tableColumnCount,
 		"drawCell":        drawCell,

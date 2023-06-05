@@ -1,9 +1,16 @@
+//go:build !release
 // +build !release
 
 package mock
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,8 +24,8 @@ import (
 var dirContent []byte
 
 const (
-	defaultFileMode os.FileMode = 0644
-	defaultDirMode  os.FileMode = 0755
+	defaultFileMode os.FileMode = 0o644
+	defaultDirMode  os.FileMode = 0o755
 )
 
 type fileInfoMock struct {
@@ -38,6 +45,8 @@ func (fInfo fileInfoMock) Sys() interface{}   { return nil }
 type fileProperties struct {
 	content *[]byte
 	mode    os.FileMode
+	isLink  bool
+	target  string
 }
 
 // isDir returns true when the properties describe a directory entry.
@@ -45,7 +54,7 @@ func (p *fileProperties) isDir() bool {
 	return p.content == &dirContent
 }
 
-//FilesMock implements the functions from piperutils.Files with an in-memory file system.
+// FilesMock implements the functions from piperutils.Files with an in-memory file system.
 type FilesMock struct {
 	files            map[string]*fileProperties
 	writtenFiles     []string
@@ -54,6 +63,7 @@ type FilesMock struct {
 	CurrentDir       string
 	Separator        string
 	FileExistsErrors map[string]error
+	FileReadErrors   map[string]error
 	FileWriteError   error
 	FileWriteErrors  map[string]error
 }
@@ -79,7 +89,11 @@ func (f *FilesMock) toAbsPath(path string) string {
 		return f.Separator + f.CurrentDir
 	}
 	if !strings.HasPrefix(path, f.Separator) {
-		path = f.Separator + filepath.Join(f.CurrentDir, path)
+		if !strings.HasPrefix(f.CurrentDir, "/") {
+			path = f.Separator + filepath.Join(f.CurrentDir, path)
+		} else {
+			path = filepath.Join(f.CurrentDir, path)
+		}
 	}
 	return path
 }
@@ -104,6 +118,17 @@ func (f *FilesMock) AddDir(path string) {
 // AddDirWithMode establishes the existence of a virtual directory.
 func (f *FilesMock) AddDirWithMode(path string, mode os.FileMode) {
 	f.associateContent(path, &dirContent, mode)
+}
+
+// SHA256 returns a random SHA256
+func (f *FilesMock) SHA256(path string) (string, error) {
+	hash := sha256.New()
+	return fmt.Sprintf("%x", string(hash.Sum(nil))), nil
+}
+
+// CurrentTime returns the current time as a fixed value
+func (f *FilesMock) CurrentTime(format string) string {
+	return "20220102-150405"
 }
 
 func (f *FilesMock) associateContent(path string, content *[]byte, mode os.FileMode) {
@@ -146,6 +171,18 @@ func (f *FilesMock) HasWrittenFile(path string) bool {
 // and it was written via CopyFile().
 func (f *FilesMock) HasCopiedFile(src string, dest string) bool {
 	return f.copiedFiles[f.toAbsPath(src)] == f.toAbsPath(dest)
+}
+
+// HasCreatedSymlink returns true if the virtual file system has a symlink with a specific target.
+func (f *FilesMock) HasCreatedSymlink(oldname, newname string) bool {
+	if f.files == nil {
+		return false
+	}
+	props, exists := f.files[f.toAbsPath(newname)]
+	if !exists {
+		return false
+	}
+	return props.isLink && props.target == oldname
 }
 
 // FileExists returns true if file content has been associated with the given path, false otherwise.
@@ -208,10 +245,28 @@ func (f *FilesMock) Copy(src, dst string) (int64, error) {
 	return int64(len(*props.content)), nil
 }
 
+// Move moves a file to the given destination
+func (f *FilesMock) Move(src, dst string) error {
+	if exists, err := f.FileExists(src); err != nil {
+		return err
+	} else if !exists {
+		return fmt.Errorf("file doesn't exist: %s", src)
+	}
+
+	if _, err := f.Copy(src, dst); err != nil {
+		return err
+	}
+
+	return f.FileRemove(src)
+}
+
 // FileRead returns the content previously associated with the given path via AddFile(), or an error if no
 // content has been associated.
 func (f *FilesMock) FileRead(path string) ([]byte, error) {
 	f.init()
+	if err := f.FileReadErrors[path]; err != nil {
+		return nil, err
+	}
 	props, exists := f.files[f.toAbsPath(path)]
 	if !exists {
 		return nil, fmt.Errorf("could not read '%s'", path)
@@ -221,6 +276,11 @@ func (f *FilesMock) FileRead(path string) ([]byte, error) {
 		return nil, fmt.Errorf("could not read '%s': %w", path, os.ErrInvalid)
 	}
 	return *props.content, nil
+}
+
+// ReadFile can be used as replacement for os.ReadFile in a compatible manner
+func (f *FilesMock) ReadFile(name string) ([]byte, error) {
+	return f.FileRead(name)
 }
 
 // FileWrite just forwards to AddFile(), i.e. the content is associated with the given path.
@@ -235,6 +295,16 @@ func (f *FilesMock) FileWrite(path string, content []byte, mode os.FileMode) err
 	f.writtenFiles = append(f.writtenFiles, f.toAbsPath(path))
 	f.AddFileWithMode(path, content, mode)
 	return nil
+}
+
+// WriteFile can be used as replacement for os.WriteFile in a compatible manner
+func (f *FilesMock) WriteFile(filename string, data []byte, perm os.FileMode) error {
+	return f.FileWrite(filename, data, perm)
+}
+
+// RemoveAll is a proxy for FileRemove
+func (f *FilesMock) RemoveAll(path string) error {
+	return f.FileRemove(path)
 }
 
 // FileRemove deletes the association of the given path with any content and records the removal of the file.
@@ -308,6 +378,25 @@ func (f *FilesMock) FileRename(oldPath, newPath string) error {
 	delete(f.files, oldAbsPath)
 	f.files[newAbsPath] = props
 	return nil
+}
+
+// TempDir create a temp-styled directory in the in-memory, so that this path is established to exist.
+func (f *FilesMock) TempDir(baseDir string, pattern string) (string, error) {
+	if len(baseDir) == 0 {
+		baseDir = "/tmp"
+	}
+
+	tmpDir := baseDir
+
+	if pattern != "" {
+		tmpDir = fmt.Sprintf("%s/%stest", baseDir, pattern)
+	}
+
+	err := f.MkdirAll(tmpDir, 0o755)
+	if err != nil {
+		return "", err
+	}
+	return tmpDir, nil
 }
 
 // MkdirAll creates a directory in the in-memory file system, so that this path is established to exist.
@@ -427,12 +516,85 @@ func (f *FilesMock) Abs(path string) (string, error) {
 	return f.toAbsPath(path), nil
 }
 
+func (f *FilesMock) Symlink(oldname, newname string) error {
+	if f.FileWriteError != nil {
+		return f.FileWriteError
+	}
+
+	if f.FileWriteErrors[newname] != nil {
+		return f.FileWriteErrors[newname]
+	}
+
+	parentExists, err := f.DirExists(filepath.Dir(newname))
+	if err != nil {
+		return err
+	}
+	if !parentExists {
+		return fmt.Errorf("failed to create symlink: parent directory %s doesn't exist", filepath.Dir(newname))
+	}
+
+	f.init()
+
+	f.files[newname] = &fileProperties{
+		isLink: true,
+		target: oldname,
+	}
+
+	return nil
+}
+
+// CreateArchive creates in memory tar.gz archive, with the content provided.
+func (f *FilesMock) CreateArchive(content map[string][]byte) ([]byte, error) {
+	if len(content) == 0 {
+		return nil, errors.New("mock archive content must not be empty")
+	}
+
+	buf := bytes.NewBuffer(nil)
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+
+	for fileName, fileContent := range content {
+		err := tw.WriteHeader(&tar.Header{
+			Name:     fileName,
+			Size:     int64(len(fileContent)),
+			Typeflag: tar.TypeRegA,
+		})
+
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = tw.Write(fileContent)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err := tw.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	err = gw.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
 // FileMock can be used in places where a io.Closer, io.StringWriter or io.Writer is expected.
-// It is the concrete type returned from FilesMock.Open()
+// It is the concrete type returned from FilesMock.OpenFile()
 type FileMock struct {
 	absPath string
 	files   *FilesMock
 	content []byte
+	buf     io.Reader
+}
+
+// Reads the content of the mock
+func (f *FileMock) Read(b []byte) (n int, err error) {
+	return f.buf.Read(b)
 }
 
 // Close mocks freeing the associated OS resources.
@@ -468,11 +630,11 @@ func (f *FileMock) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Open mimics the behavior os.Open(), but it cannot return an instance of the os.File struct.
+// OpenFile mimics the behavior os.OpenFile(), but it cannot return an instance of the os.File struct.
 // Instead, it returns a pointer to a FileMock instance, which implements a number of the same methods as os.File.
 // The flag parameter is checked for os.O_CREATE and os.O_APPEND and behaves accordingly.
-func (f *FilesMock) Open(path string, flag int, perm os.FileMode) (*FileMock, error) {
-	if f.files == nil && flag&os.O_CREATE == 0 {
+func (f *FilesMock) OpenFile(path string, flag int, perm os.FileMode) (*FileMock, error) {
+	if (f.files == nil || !f.HasFile(path)) && flag&os.O_CREATE == 0 {
 		return nil, fmt.Errorf("the file '%s' does not exist: %w", path, os.ErrNotExist)
 	}
 	f.init()
@@ -483,20 +645,29 @@ func (f *FilesMock) Open(path string, flag int, perm os.FileMode) (*FileMock, er
 	}
 	if !exists && flag&os.O_CREATE != 0 {
 		f.associateContentAbs(absPath, &[]byte{}, perm)
-		properties, _ = f.files[absPath]
+		properties = f.files[absPath]
 	}
 
 	file := FileMock{
 		absPath: absPath,
 		files:   f,
-		content: []byte{},
+		content: *properties.content,
 	}
 
-	if flag&os.O_APPEND != 0 {
-		file.content = *properties.content
-	} else if flag&os.O_TRUNC != 0 {
+	if flag&os.O_TRUNC != 0 || flag&os.O_CREATE != 0 {
+		file.content = []byte{}
 		properties.content = &file.content
 	}
 
+	file.buf = bytes.NewBuffer(file.content)
+
 	return &file, nil
+}
+
+func (f *FilesMock) Open(name string) (io.ReadWriteCloser, error) {
+	return f.OpenFile(name, os.O_RDONLY, 0)
+}
+
+func (f *FilesMock) Create(name string) (io.ReadWriteCloser, error) {
+	return f.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 }

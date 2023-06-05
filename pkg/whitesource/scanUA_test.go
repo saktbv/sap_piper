@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package whitesource
 
 import (
@@ -25,7 +28,8 @@ func TestExecuteUAScan(t *testing.T) {
 		err := scan.ExecuteUAScan(&config, utilsMock)
 		assert.NoError(t, err)
 		assert.Equal(t, "maven", config.BuildTool)
-		assert.Contains(t, utilsMock.Calls[1].Params, ".")
+		assert.Contains(t, utilsMock.Calls[1].Params, "-v")
+		assert.Contains(t, utilsMock.Calls[2].Params, ".")
 	})
 
 	t.Run("success - mta", func(t *testing.T) {
@@ -42,7 +46,8 @@ func TestExecuteUAScan(t *testing.T) {
 		err := scan.ExecuteUAScan(&config, utilsMock)
 		assert.NoError(t, err)
 		assert.Equal(t, "mta", config.BuildTool)
-		assert.Contains(t, utilsMock.Calls[1].Params, ".")
+		assert.Contains(t, utilsMock.Calls[1].Params, "-v")
+		assert.Contains(t, utilsMock.Calls[2].Params, ".")
 	})
 
 	t.Run("error - maven", func(t *testing.T) {
@@ -125,16 +130,16 @@ func TestExecuteUAScanInPath(t *testing.T) {
 
 		err := scan.ExecuteUAScanInPath(&config, utilsMock, "")
 		assert.NoError(t, err)
-		assert.Equal(t, "java", utilsMock.Calls[1].Exec)
-		assert.Equal(t, 8, len(utilsMock.Calls[1].Params))
-		assert.Contains(t, utilsMock.Calls[1].Params, "-jar")
-		assert.Contains(t, utilsMock.Calls[1].Params, "-d")
-		assert.Contains(t, utilsMock.Calls[1].Params, ".")
-		assert.Contains(t, utilsMock.Calls[1].Params, "-c")
-		assert.Contains(t, utilsMock.Calls[1].Params, "unified-agent.jar")
+		assert.Equal(t, "java", utilsMock.Calls[2].Exec)
+		assert.Equal(t, 8, len(utilsMock.Calls[2].Params))
+		assert.Contains(t, utilsMock.Calls[2].Params, "-jar")
+		assert.Contains(t, utilsMock.Calls[2].Params, "-d")
+		assert.Contains(t, utilsMock.Calls[2].Params, ".")
+		assert.Contains(t, utilsMock.Calls[2].Params, "-c")
+		assert.Contains(t, utilsMock.Calls[2].Params, "unified-agent.jar")
 		// name of config file not tested since it is dynamic. This is acceptable here since we test also the size
-		assert.Contains(t, utilsMock.Calls[1].Params, "-wss.url")
-		assert.Contains(t, utilsMock.Calls[1].Params, config.AgentURL)
+		assert.Contains(t, utilsMock.Calls[2].Params, "-wss.url")
+		assert.Contains(t, utilsMock.Calls[2].Params, config.AgentURL)
 	})
 
 	t.Run("success - dedicated path", func(t *testing.T) {
@@ -153,8 +158,8 @@ func TestExecuteUAScanInPath(t *testing.T) {
 
 		err := scan.ExecuteUAScanInPath(&config, utilsMock, "./my/test/path")
 		assert.NoError(t, err)
-		assert.Contains(t, utilsMock.Calls[1].Params, "-d")
-		assert.Contains(t, utilsMock.Calls[1].Params, "./my/test/path")
+		assert.Contains(t, utilsMock.Calls[2].Params, "-d")
+		assert.Contains(t, utilsMock.Calls[2].Params, "./my/test/path")
 	})
 
 	t.Run("error - download agent", func(t *testing.T) {
@@ -214,7 +219,7 @@ func TestExecuteUAScanInPath(t *testing.T) {
 		scan := newTestScan(&config)
 
 		err := scan.ExecuteUAScanInPath(&config, utilsMock, "")
-		assert.Contains(t, fmt.Sprint(err), "failed to execute WhiteSource scan with exit code")
+		assert.Contains(t, fmt.Sprint(err), "Failed to determine UA version")
 	})
 }
 
@@ -291,6 +296,39 @@ func TestDownloadAgent(t *testing.T) {
 		err := downloadAgent(&config, utilsMock)
 		assert.Contains(t, fmt.Sprint(err), "failed to download unified agent from URL")
 	})
+	t.Run("error - download with retry unable to copy content from file", func(t *testing.T) {
+		config := ScanOptions{
+			AgentDownloadURL: "errorCopyFile", // Misusing this ScanOptions to tell DownloadFile Mock to raise an error
+			AgentFileName:    "unified-agent.jar",
+		}
+		utilsMock := NewScanUtilsMock()
+		utilsMock.DownloadError = map[string]error{"https://download.ua.org/agent.jar": fmt.Errorf("unable to copy content from url to file")}
+
+		err := downloadAgent(&config, utilsMock)
+		assert.Contains(t, fmt.Sprint(err), "unable to copy content from url to file")
+	})
+	t.Run("error - download with retry forbidden", func(t *testing.T) {
+		config := ScanOptions{
+			AgentDownloadURL: "error403Forbidden", // Misusing this ScanOptions to tell DownloadFile Mock to raise an error
+			AgentFileName:    "unified-agent.jar",
+		}
+		utilsMock := NewScanUtilsMock()
+		utilsMock.DownloadError = map[string]error{"https://download.ua.org/agent.jar": fmt.Errorf("returned with response 403 Forbidden")}
+
+		err := downloadAgent(&config, utilsMock)
+		assert.Contains(t, fmt.Sprint(err), "returned with response 403 Forbidden")
+	})
+	t.Run("error - download with retry not found 404", func(t *testing.T) {
+		config := ScanOptions{
+			AgentDownloadURL: "error404NotFound", // Misusing this ScanOptions to tell DownloadFile Mock to raise an error
+			AgentFileName:    "unified-agent.jar",
+		}
+		utilsMock := NewScanUtilsMock()
+		utilsMock.DownloadError = map[string]error{"https://download.ua.org/agent.jar": fmt.Errorf("returned with response 404 Not Found")}
+
+		err := downloadAgent(&config, utilsMock)
+		assert.Contains(t, fmt.Sprint(err), "returned with response 404 Not Found")
+	})
 }
 
 func TestDownloadJre(t *testing.T) {
@@ -348,6 +386,18 @@ func TestDownloadJre(t *testing.T) {
 
 		_, err := downloadJre(&config, utilsMock)
 		assert.Contains(t, fmt.Sprint(err), "failed to download jre from URL")
+	})
+
+	t.Run("error - download with retry", func(t *testing.T) {
+		config := ScanOptions{
+			JreDownloadURL: "errorCopyFile",
+		}
+		utilsMock := NewScanUtilsMock()
+		utilsMock.ShouldFailOnCommand = map[string]error{"java": fmt.Errorf("failed to run java")}
+		//utilsMock.DownloadError = map[string]error{"https://download.jre.org/jvm.jar": fmt.Errorf("failed to download file")}
+
+		_, err := downloadJre(&config, utilsMock)
+		assert.Contains(t, fmt.Sprint(err), "unable to copy content from url to file")
 	})
 
 	t.Run("error - tar execution", func(t *testing.T) {

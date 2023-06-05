@@ -13,6 +13,7 @@ import (
 	"github.com/SAP/jenkins-library/pkg/piperenv"
 	"github.com/SAP/jenkins-library/pkg/splunk"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
+	"github.com/SAP/jenkins-library/pkg/validation"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,8 @@ type abapAddonAssemblyKitReserveNextPackagesOptions struct {
 	Username                     string `json:"username,omitempty"`
 	Password                     string `json:"password,omitempty"`
 	AddonDescriptor              string `json:"addonDescriptor,omitempty"`
+	MaxRuntimeInMinutes          int    `json:"maxRuntimeInMinutes,omitempty"`
+	PollingIntervalInSeconds     int    `json:"pollingIntervalInSeconds,omitempty"`
 }
 
 type abapAddonAssemblyKitReserveNextPackagesCommonPipelineEnvironment struct {
@@ -47,7 +50,7 @@ func (p *abapAddonAssemblyKitReserveNextPackagesCommonPipelineEnvironment) persi
 		}
 	}
 	if errCount > 0 {
-		log.Entry().Fatal("failed to persist Piper environment")
+		log.Entry().Error("failed to persist Piper environment")
 	}
 }
 
@@ -60,6 +63,8 @@ func AbapAddonAssemblyKitReserveNextPackagesCommand() *cobra.Command {
 	var startTime time.Time
 	var commonPipelineEnvironment abapAddonAssemblyKitReserveNextPackagesCommonPipelineEnvironment
 	var logCollector *log.CollectorHook
+	var splunkClient *splunk.Splunk
+	telemetryClient := &telemetry.Telemetry{}
 
 	var createAbapAddonAssemblyKitReserveNextPackagesCmd = &cobra.Command{
 		Use:   STEP_NAME,
@@ -67,8 +72,8 @@ func AbapAddonAssemblyKitReserveNextPackagesCommand() *cobra.Command {
 		Long: `This step takes the list of Software Component Versions from the addonDescriptor in the commonPipelineEnvironment and determines the ABAP delivery packages.
 If a package does not exist yet in the package registry, it is created there. The response contains detail information for this package and a package status, which determines the next actions:
 "P": Package was created in the registry; production can be started / continued
-"R": Package exists and is already released; production is not needed and will be skipped
-The steps waits until the status "P" or "R" is achieved.
+"R": Package exists and is already released; production is not needed and will be skipped.
+The step waits until the status "P" or "R" is achieved.
 The name, type and namespace of each package is written back to the addonDescriptor in the commonPipelineEnvironment.
 <br />
 For Terminology refer to the [Scenario Description](https://www.project-piper.io/scenarios/abapEnvironmentAddons/).`,
@@ -76,6 +81,8 @@ For Terminology refer to the [Scenario Description](https://www.project-piper.io
 			startTime = time.Now()
 			log.SetStepName(STEP_NAME)
 			log.SetVerbose(GeneralConfig.Verbose)
+
+			GeneralConfig.GitHubAccessTokens = ResolveAccessTokens(GeneralConfig.GitHubTokens)
 
 			path, _ := os.Getwd()
 			fatalHook := &log.FatalHook{CorrelationID: GeneralConfig.CorrelationID, Path: path}
@@ -95,37 +102,53 @@ For Terminology refer to the [Scenario Description](https://www.project-piper.io
 			}
 
 			if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
+				splunkClient = &splunk.Splunk{}
 				logCollector = &log.CollectorHook{CorrelationID: GeneralConfig.CorrelationID}
 				log.RegisterHook(logCollector)
+			}
+
+			if err = log.RegisterANSHookIfConfigured(GeneralConfig.CorrelationID); err != nil {
+				log.Entry().WithError(err).Warn("failed to set up SAP Alert Notification Service log hook")
+			}
+
+			validation, err := validation.New(validation.WithJSONNamesForStructFields(), validation.WithPredefinedErrorMessages())
+			if err != nil {
+				return err
+			}
+			if err = validation.ValidateStruct(stepConfig); err != nil {
+				log.SetErrorCategory(log.ErrorConfiguration)
+				return err
 			}
 
 			return nil
 		},
 		Run: func(_ *cobra.Command, _ []string) {
-			telemetryData := telemetry.CustomData{}
-			telemetryData.ErrorCode = "1"
+			stepTelemetryData := telemetry.CustomData{}
+			stepTelemetryData.ErrorCode = "1"
 			handler := func() {
-				config.RemoveVaultSecretFiles()
 				commonPipelineEnvironment.persist(GeneralConfig.EnvRootPath, "commonPipelineEnvironment")
-				telemetryData.Duration = fmt.Sprintf("%v", time.Since(startTime).Milliseconds())
-				telemetryData.ErrorCategory = log.GetErrorCategory().String()
-				telemetry.Send(&telemetryData)
+				config.RemoveVaultSecretFiles()
+				stepTelemetryData.Duration = fmt.Sprintf("%v", time.Since(startTime).Milliseconds())
+				stepTelemetryData.ErrorCategory = log.GetErrorCategory().String()
+				stepTelemetryData.PiperCommitHash = GitCommit
+				telemetryClient.SetData(&stepTelemetryData)
+				telemetryClient.Send()
 				if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
-					splunk.Send(&telemetryData, logCollector)
+					splunkClient.Send(telemetryClient.GetData(), logCollector)
 				}
 			}
 			log.DeferExitHandler(handler)
 			defer handler()
-			telemetry.Initialize(GeneralConfig.NoTelemetry, STEP_NAME)
+			telemetryClient.Initialize(GeneralConfig.NoTelemetry, STEP_NAME)
 			if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
-				splunk.Initialize(GeneralConfig.CorrelationID,
+				splunkClient.Initialize(GeneralConfig.CorrelationID,
 					GeneralConfig.HookConfig.SplunkConfig.Dsn,
 					GeneralConfig.HookConfig.SplunkConfig.Token,
 					GeneralConfig.HookConfig.SplunkConfig.Index,
 					GeneralConfig.HookConfig.SplunkConfig.SendLogs)
 			}
-			abapAddonAssemblyKitReserveNextPackages(stepConfig, &telemetryData, &commonPipelineEnvironment)
-			telemetryData.ErrorCode = "0"
+			abapAddonAssemblyKitReserveNextPackages(stepConfig, &stepTelemetryData, &commonPipelineEnvironment)
+			stepTelemetryData.ErrorCode = "0"
 			log.Entry().Info("SUCCESS")
 		},
 	}
@@ -139,6 +162,8 @@ func addAbapAddonAssemblyKitReserveNextPackagesFlags(cmd *cobra.Command, stepCon
 	cmd.Flags().StringVar(&stepConfig.Username, "username", os.Getenv("PIPER_username"), "User for the Addon Assembly Kit as a Service (AAKaaS) system")
 	cmd.Flags().StringVar(&stepConfig.Password, "password", os.Getenv("PIPER_password"), "Password for the Addon Assembly Kit as a Service (AAKaaS) system")
 	cmd.Flags().StringVar(&stepConfig.AddonDescriptor, "addonDescriptor", os.Getenv("PIPER_addonDescriptor"), "Structure in the commonPipelineEnvironment containing information about the Product Version and corresponding Software Component Versions")
+	cmd.Flags().IntVar(&stepConfig.MaxRuntimeInMinutes, "maxRuntimeInMinutes", 5, "Maximum runtime for status polling in minutes")
+	cmd.Flags().IntVar(&stepConfig.PollingIntervalInSeconds, "pollingIntervalInSeconds", 30, "Wait time in seconds between polling calls")
 
 	cmd.MarkFlagRequired("abapAddonAssemblyKitEndpoint")
 	cmd.MarkFlagRequired("username")
@@ -201,6 +226,24 @@ func abapAddonAssemblyKitReserveNextPackagesMetadata() config.StepData {
 						Aliases:   []config.Alias{},
 						Default:   os.Getenv("PIPER_addonDescriptor"),
 					},
+					{
+						Name:        "maxRuntimeInMinutes",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS", "GENERAL"},
+						Type:        "int",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     5,
+					},
+					{
+						Name:        "pollingIntervalInSeconds",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS", "GENERAL"},
+						Type:        "int",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     30,
+					},
 				},
 			},
 			Outputs: config.StepOutputs{
@@ -209,7 +252,7 @@ func abapAddonAssemblyKitReserveNextPackagesMetadata() config.StepData {
 						Name: "commonPipelineEnvironment",
 						Type: "piperEnvironment",
 						Parameters: []map[string]interface{}{
-							{"Name": "abap/addonDescriptor"},
+							{"name": "abap/addonDescriptor"},
 						},
 					},
 				},

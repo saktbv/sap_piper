@@ -55,16 +55,17 @@ void call(Map parameters = [:]) {
         .addIfEmpty('npmExecuteLint', script.commonPipelineEnvironment.configuration.runStep?.get(stageName)?.npmExecuteLint)
         .addIfEmpty('mavenExecuteStaticCodeChecks', script.commonPipelineEnvironment.configuration.runStep?.get(stageName)?.mavenExecuteStaticCodeChecks)
         .use()
-	
+
     piperStageWrapper (script: script, stageName: stageName) {
 
         // telemetry reporting
         utils.pushToSWA([step: STEP_NAME], config)
 
         durationMeasure(script: script, measurementName: 'build_duration') {
+
             buildExecute script: script
             pipelineStashFilesAfterBuild script: script
-            
+
             try {
                 testsPublishResults script: script, junit: [updateResults: true]
                 checksPublishResults script: script

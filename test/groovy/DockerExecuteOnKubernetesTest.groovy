@@ -764,6 +764,19 @@ class DockerExecuteOnKubernetesTest extends BasePiperTest {
     }
 
     @Test
+    void testDockerExecuteOnKubernetesAnnotations(){
+        stepRule.step.dockerExecuteOnKubernetes(
+            script: nullScript,
+            juStabUtils: utils,
+            annotations: ['testAnnotation':'testValue']
+        )
+        {
+            bodyExecuted = true
+        }
+        assertEquals(['testAnnotation':'testValue'], podSpec.metadata.annotations)
+    }
+
+    @Test
     void testStashIncludesAndExcludes() {
         nullScript.commonPipelineEnvironment.configuration = [
             steps: [
@@ -787,11 +800,11 @@ class DockerExecuteOnKubernetesTest extends BasePiperTest {
             bodyExecuted = true
         }
         assertThat(stashList, hasItem(allOf(
-            not(hasEntry('allowEmpty', true)),
+            hasEntry('allowEmpty', true),
             hasEntry('includes', 'workspace/include.test'),
             hasEntry('excludes', 'workspace/exclude.test'))))
         assertThat(stashList, hasItem(allOf(
-            not(hasEntry('allowEmpty', true)),
+            hasEntry('allowEmpty', true),
             hasEntry('includes', 'container/include.test'),
             hasEntry('excludes', 'container/exclude.test'))))
     }
@@ -860,6 +873,7 @@ class DockerExecuteOnKubernetesTest extends BasePiperTest {
         assertTrue(bodyExecuted)
         assertThat(initContainer.command, is(equalTo(expectedCommandOutput)))
     }
+
 
     private container(options, body) {
         containerName = options.name

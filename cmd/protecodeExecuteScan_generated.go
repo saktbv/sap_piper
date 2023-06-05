@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/SAP/jenkins-library/pkg/config"
+	"github.com/SAP/jenkins-library/pkg/gcs"
 	"github.com/SAP/jenkins-library/pkg/log"
 	"github.com/SAP/jenkins-library/pkg/piperenv"
 	"github.com/SAP/jenkins-library/pkg/splunk"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
+	"github.com/SAP/jenkins-library/pkg/validation"
+	"github.com/bmatcuk/doublestar"
 	"github.com/spf13/cobra"
 )
 
@@ -22,19 +27,23 @@ type protecodeExecuteScanOptions struct {
 	ScanImage                   string `json:"scanImage,omitempty"`
 	DockerRegistryURL           string `json:"dockerRegistryUrl,omitempty"`
 	DockerConfigJSON            string `json:"dockerConfigJSON,omitempty"`
-	CleanupMode                 string `json:"cleanupMode,omitempty"`
+	CleanupMode                 string `json:"cleanupMode,omitempty" validate:"possible-values=none binary complete"`
 	FilePath                    string `json:"filePath,omitempty"`
-	IncludeLayers               bool   `json:"includeLayers,omitempty"`
 	TimeoutMinutes              string `json:"timeoutMinutes,omitempty"`
 	ServerURL                   string `json:"serverUrl,omitempty"`
 	ReportFileName              string `json:"reportFileName,omitempty"`
 	FetchURL                    string `json:"fetchUrl,omitempty"`
 	Group                       string `json:"group,omitempty"`
 	VerifyOnly                  bool   `json:"verifyOnly,omitempty"`
+	ReplaceProductID            int    `json:"replaceProductId,omitempty"`
 	Username                    string `json:"username,omitempty"`
 	Password                    string `json:"password,omitempty"`
+	UserAPIKey                  string `json:"userAPIKey,omitempty"`
 	Version                     string `json:"version,omitempty"`
+	CustomScanVersion           string `json:"customScanVersion,omitempty"`
+	VersioningModel             string `json:"versioningModel,omitempty" validate:"possible-values=major major-minor semantic full"`
 	PullRequestName             string `json:"pullRequestName,omitempty"`
+	CustomDataJSONMap           string `json:"customDataJSONMap,omitempty"`
 }
 
 type protecodeExecuteScanInflux struct {
@@ -84,11 +93,50 @@ func (i *protecodeExecuteScanInflux) persist(path, resourceName string) {
 		}
 	}
 	if errCount > 0 {
-		log.Entry().Fatal("failed to persist Influx environment")
+		log.Entry().Error("failed to persist Influx environment")
 	}
 }
 
-// ProtecodeExecuteScanCommand Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.
+type protecodeExecuteScanReports struct {
+}
+
+func (p *protecodeExecuteScanReports) persist(stepConfig protecodeExecuteScanOptions, gcpJsonKeyFilePath string, gcsBucketId string, gcsFolderPath string, gcsSubFolder string) {
+	if gcsBucketId == "" {
+		log.Entry().Info("persisting reports to GCS is disabled, because gcsBucketId is empty")
+		return
+	}
+	log.Entry().Info("Uploading reports to Google Cloud Storage...")
+	content := []gcs.ReportOutputParam{
+		{FilePattern: "**/toolrun_protecode_*.json", ParamRef: "", StepResultType: "protecode"},
+		{FilePattern: "", ParamRef: "reportFileName", StepResultType: "protecode"},
+		{FilePattern: "**/protecodeExecuteScan.json", ParamRef: "", StepResultType: "protecode"},
+		{FilePattern: "**/protecodescan_vulns.json", ParamRef: "", StepResultType: "protecode"},
+	}
+	envVars := []gcs.EnvVar{
+		{Name: "GOOGLE_APPLICATION_CREDENTIALS", Value: gcpJsonKeyFilePath, Modified: false},
+	}
+	gcsClient, err := gcs.NewClient(gcs.WithEnvVars(envVars))
+	if err != nil {
+		log.Entry().Errorf("creation of GCS client failed: %v", err)
+		return
+	}
+	defer gcsClient.Close()
+	structVal := reflect.ValueOf(&stepConfig).Elem()
+	inputParameters := map[string]string{}
+	for i := 0; i < structVal.NumField(); i++ {
+		field := structVal.Type().Field(i)
+		if field.Type.String() == "string" {
+			paramName := strings.Split(field.Tag.Get("json"), ",")
+			paramValue, _ := structVal.Field(i).Interface().(string)
+			inputParameters[paramName[0]] = paramValue
+		}
+	}
+	if err := gcs.PersistReportsToGCS(gcsClient, content, inputParameters, gcsFolderPath, gcsBucketId, gcsSubFolder, doublestar.Glob, os.Stat); err != nil {
+		log.Entry().Errorf("failed to persist reports: %v", err)
+	}
+}
+
+// ProtecodeExecuteScanCommand Black Duck Binary Analysis (BDBA), previously known as Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.
 func ProtecodeExecuteScanCommand() *cobra.Command {
 	const STEP_NAME = "protecodeExecuteScan"
 
@@ -96,19 +144,25 @@ func ProtecodeExecuteScanCommand() *cobra.Command {
 	var stepConfig protecodeExecuteScanOptions
 	var startTime time.Time
 	var influx protecodeExecuteScanInflux
+	var reports protecodeExecuteScanReports
 	var logCollector *log.CollectorHook
+	var splunkClient *splunk.Splunk
+	telemetryClient := &telemetry.Telemetry{}
 
 	var createProtecodeExecuteScanCmd = &cobra.Command{
 		Use:   STEP_NAME,
-		Short: "Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.",
-		Long: `Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.
+		Short: "Black Duck Binary Analysis (BDBA), previously known as Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.",
+		Long: `Black Duck Binary Analysis (previously known as Protecode) is an Open Source Vulnerability Scan tool which provides the composition of Open Source components in a product along with Security information (no license info is provided).
+BDBA (Protecode) uses a combination of static binary analysis techniques to X-ray the provided software package to identify third-party software components and their exact versions with a high level of confidence. Methods range from simple string matching to proprietary patent-pending techniques.
 
 !!! hint "Auditing findings (Triaging)"
-    Triaging is now supported by the Protecode backend and also Piper does consider this information during the analysis of the scan results though product versions are not supported by Protecode. Therefore please make sure that the ` + "`" + `fileName` + "`" + ` you are providing does either contain a stable version or that it does not contain one at all. By ensuring that you are able to triage CVEs globally on the upload file's name without affecting any other artifacts scanned in the same Protecode group and as such triaged vulnerabilities will be considered during the next scan and will not fail the build anymore.`,
+    Triaging is now supported by the BDBA (Protecode) backend and also Piper does consider this information during the analysis of the scan results though product versions are not supported by BDBA (Protecode). Therefore please make sure that the ` + "`" + `fileName` + "`" + ` you are providing does either contain a stable version or that it does not contain one at all. By ensuring that you are able to triage CVEs globally on the upload file's name without affecting any other artifacts scanned in the same BDBA (Protecode) group and as such triaged vulnerabilities will be considered during the next scan and will not fail the build anymore.`,
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			startTime = time.Now()
 			log.SetStepName(STEP_NAME)
 			log.SetVerbose(GeneralConfig.Verbose)
+
+			GeneralConfig.GitHubAccessTokens = ResolveAccessTokens(GeneralConfig.GitHubTokens)
 
 			path, _ := os.Getwd()
 			fatalHook := &log.FatalHook{CorrelationID: GeneralConfig.CorrelationID, Path: path}
@@ -122,6 +176,7 @@ func ProtecodeExecuteScanCommand() *cobra.Command {
 			log.RegisterSecret(stepConfig.DockerConfigJSON)
 			log.RegisterSecret(stepConfig.Username)
 			log.RegisterSecret(stepConfig.Password)
+			log.RegisterSecret(stepConfig.UserAPIKey)
 
 			if len(GeneralConfig.HookConfig.SentryConfig.Dsn) > 0 {
 				sentryHook := log.NewSentryHook(GeneralConfig.HookConfig.SentryConfig.Dsn, GeneralConfig.CorrelationID)
@@ -129,37 +184,54 @@ func ProtecodeExecuteScanCommand() *cobra.Command {
 			}
 
 			if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
+				splunkClient = &splunk.Splunk{}
 				logCollector = &log.CollectorHook{CorrelationID: GeneralConfig.CorrelationID}
 				log.RegisterHook(logCollector)
+			}
+
+			if err = log.RegisterANSHookIfConfigured(GeneralConfig.CorrelationID); err != nil {
+				log.Entry().WithError(err).Warn("failed to set up SAP Alert Notification Service log hook")
+			}
+
+			validation, err := validation.New(validation.WithJSONNamesForStructFields(), validation.WithPredefinedErrorMessages())
+			if err != nil {
+				return err
+			}
+			if err = validation.ValidateStruct(stepConfig); err != nil {
+				log.SetErrorCategory(log.ErrorConfiguration)
+				return err
 			}
 
 			return nil
 		},
 		Run: func(_ *cobra.Command, _ []string) {
-			telemetryData := telemetry.CustomData{}
-			telemetryData.ErrorCode = "1"
+			stepTelemetryData := telemetry.CustomData{}
+			stepTelemetryData.ErrorCode = "1"
 			handler := func() {
-				config.RemoveVaultSecretFiles()
 				influx.persist(GeneralConfig.EnvRootPath, "influx")
-				telemetryData.Duration = fmt.Sprintf("%v", time.Since(startTime).Milliseconds())
-				telemetryData.ErrorCategory = log.GetErrorCategory().String()
-				telemetry.Send(&telemetryData)
+				reports.persist(stepConfig, GeneralConfig.GCPJsonKeyFilePath, GeneralConfig.GCSBucketId, GeneralConfig.GCSFolderPath, GeneralConfig.GCSSubFolder)
+				config.RemoveVaultSecretFiles()
+				stepTelemetryData.Duration = fmt.Sprintf("%v", time.Since(startTime).Milliseconds())
+				stepTelemetryData.ErrorCategory = log.GetErrorCategory().String()
+				stepTelemetryData.PiperCommitHash = GitCommit
+				telemetryClient.SetData(&stepTelemetryData)
+				telemetryClient.Send()
 				if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
-					splunk.Send(&telemetryData, logCollector)
+					splunkClient.Send(telemetryClient.GetData(), logCollector)
 				}
 			}
 			log.DeferExitHandler(handler)
 			defer handler()
-			telemetry.Initialize(GeneralConfig.NoTelemetry, STEP_NAME)
+			telemetryClient.Initialize(GeneralConfig.NoTelemetry, STEP_NAME)
 			if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
-				splunk.Initialize(GeneralConfig.CorrelationID,
+				splunkClient.Initialize(GeneralConfig.CorrelationID,
 					GeneralConfig.HookConfig.SplunkConfig.Dsn,
 					GeneralConfig.HookConfig.SplunkConfig.Token,
 					GeneralConfig.HookConfig.SplunkConfig.Index,
 					GeneralConfig.HookConfig.SplunkConfig.SendLogs)
 			}
-			protecodeExecuteScan(stepConfig, &telemetryData, &influx)
-			telemetryData.ErrorCode = "0"
+			protecodeExecuteScan(stepConfig, &stepTelemetryData, &influx)
+			stepTelemetryData.ErrorCode = "0"
 			log.Entry().Info("SUCCESS")
 		},
 	}
@@ -170,23 +242,27 @@ func ProtecodeExecuteScanCommand() *cobra.Command {
 
 func addProtecodeExecuteScanFlags(cmd *cobra.Command, stepConfig *protecodeExecuteScanOptions) {
 	cmd.Flags().StringVar(&stepConfig.ExcludeCVEs, "excludeCVEs", ``, "DEPRECATED: Do use triaging within the Protecode UI instead")
-	cmd.Flags().BoolVar(&stepConfig.FailOnSevereVulnerabilities, "failOnSevereVulnerabilities", true, "Whether to fail the job on severe vulnerabilties or not")
-	cmd.Flags().StringVar(&stepConfig.ScanImage, "scanImage", os.Getenv("PIPER_scanImage"), "The reference to the docker image to scan with Protecode")
+	cmd.Flags().BoolVar(&stepConfig.FailOnSevereVulnerabilities, "failOnSevereVulnerabilities", true, "Whether to fail the step on severe vulnerabilties or not")
+	cmd.Flags().StringVar(&stepConfig.ScanImage, "scanImage", os.Getenv("PIPER_scanImage"), "The reference to the docker image to scan with Protecode. Note: If possible please also check [fetchUrl](https://www.project-piper.io/steps/protecodeExecuteScan/#fetchurl) parameter, which might help you to optimize upload time.")
 	cmd.Flags().StringVar(&stepConfig.DockerRegistryURL, "dockerRegistryUrl", os.Getenv("PIPER_dockerRegistryUrl"), "The reference to the docker registry to scan with Protecode")
 	cmd.Flags().StringVar(&stepConfig.DockerConfigJSON, "dockerConfigJSON", os.Getenv("PIPER_dockerConfigJSON"), "Path to the file `.docker/config.json` - this is typically provided by your CI/CD system. You can find more details about the Docker credentials in the [Docker documentation](https://docs.docker.com/engine/reference/commandline/login/).")
 	cmd.Flags().StringVar(&stepConfig.CleanupMode, "cleanupMode", `binary`, "Decides which parts are removed from the Protecode backend after the scan")
 	cmd.Flags().StringVar(&stepConfig.FilePath, "filePath", os.Getenv("PIPER_filePath"), "The path to the file from local workspace to scan with Protecode")
-	cmd.Flags().BoolVar(&stepConfig.IncludeLayers, "includeLayers", false, "Flag if the docker layers should be included")
 	cmd.Flags().StringVar(&stepConfig.TimeoutMinutes, "timeoutMinutes", `60`, "The timeout to wait for the scan to finish")
 	cmd.Flags().StringVar(&stepConfig.ServerURL, "serverUrl", os.Getenv("PIPER_serverUrl"), "The URL to the Protecode backend")
 	cmd.Flags().StringVar(&stepConfig.ReportFileName, "reportFileName", `protecode_report.pdf`, "The file name of the report to be created")
 	cmd.Flags().StringVar(&stepConfig.FetchURL, "fetchUrl", os.Getenv("PIPER_fetchUrl"), "The URL to fetch the file or image to scan with Protecode.")
 	cmd.Flags().StringVar(&stepConfig.Group, "group", os.Getenv("PIPER_group"), "The Protecode group ID of your team")
 	cmd.Flags().BoolVar(&stepConfig.VerifyOnly, "verifyOnly", false, "Whether the step shall only apply verification checks or whether it does a full scan and check cycle")
+	cmd.Flags().IntVar(&stepConfig.ReplaceProductID, "replaceProductId", 0, "Specify <replaceProductId> which application binary will be replaced and rescanned and product id remains unchanged. By using this parameter, Protecode avoids creating multiple same products. Note this will affect results and feeds. If product id is not specified, then Piper starts auto detection mechanism, more precisely it searches a product id with scanned product name in that specified group, if there are several scans have been done with the same product name then the latest scan id will be fetched from BDBA backend. After obtaining product id, Piper re-uploads / replaces new binary without affecting already existing product id.")
 	cmd.Flags().StringVar(&stepConfig.Username, "username", os.Getenv("PIPER_username"), "User which is used for the protecode scan")
 	cmd.Flags().StringVar(&stepConfig.Password, "password", os.Getenv("PIPER_password"), "Password which is used for the user")
+	cmd.Flags().StringVar(&stepConfig.UserAPIKey, "userAPIKey", os.Getenv("PIPER_userAPIKey"), "User API key which is used for API calls. Replacement for username and password / basic authentication.")
 	cmd.Flags().StringVar(&stepConfig.Version, "version", os.Getenv("PIPER_version"), "The version of the artifact to allow identification in protecode backend")
+	cmd.Flags().StringVar(&stepConfig.CustomScanVersion, "customScanVersion", os.Getenv("PIPER_customScanVersion"), "A custom version used along with the uploaded scan results.")
+	cmd.Flags().StringVar(&stepConfig.VersioningModel, "versioningModel", `major`, "The versioning model used for result reporting (based on the artifact version). Example 1.2.3 using `major` will result in version 1")
 	cmd.Flags().StringVar(&stepConfig.PullRequestName, "pullRequestName", os.Getenv("PIPER_pullRequestName"), "The name of the pull request")
+	cmd.Flags().StringVar(&stepConfig.CustomDataJSONMap, "customDataJSONMap", os.Getenv("PIPER_customDataJSONMap"), "The JSON map of key-value pairs to be included in this scan's Custom Data (See protecode API).")
 
 	cmd.MarkFlagRequired("serverUrl")
 	cmd.MarkFlagRequired("group")
@@ -200,13 +276,14 @@ func protecodeExecuteScanMetadata() config.StepData {
 		Metadata: config.StepMetadata{
 			Name:        "protecodeExecuteScan",
 			Aliases:     []config.Alias{},
-			Description: "Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.",
+			Description: "Black Duck Binary Analysis (BDBA), previously known as Protecode is an Open Source Vulnerability Scanner that is capable of scanning binaries. It can be used to scan docker images but is supports many other programming languages especially those of the C family.",
 		},
 		Spec: config.StepSpec{
 			Inputs: config.StepInputs{
 				Secrets: []config.StepSecrets{
 					{Name: "protecodeCredentialsId", Description: "Jenkins 'Username with password' credentials ID containing username and password to authenticate to the Protecode system.", Type: "jenkins"},
-					{Name: "dockerConfigJsonCredentialsId", Description: "Jenkins 'Secret file' credentials ID containing Docker config.json (with registry credential(s)). You can create it like explained in the Docker Success Center in the article about [how to generate a new auth in the config.json file](https://success.docker.com/article/generate-new-auth-in-config-json-file).", Type: "jenkins", Aliases: []config.Alias{{Name: "dockerCredentialsId", Deprecated: true}}},
+					{Name: "protecodeApiKeyCredentialsId", Description: "Jenkins 'Secret text' credentials ID containing API Key/token to authenticate to BDBA server.", Type: "jenkins"},
+					{Name: "dockerConfigJsonCredentialsId", Description: "Jenkins 'Secret file' credentials ID containing Docker config.json (with registry credential(s)). You can create it like explained in [Prerequisites](https://www.project-piper.io/steps/protecodeExecuteScan/#prerequisites).", Type: "jenkins", Aliases: []config.Alias{{Name: "dockerCredentialsId", Deprecated: true}}},
 				},
 				Parameters: []config.StepParameters{
 					{
@@ -259,14 +336,19 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Name: "dockerConfigJSON",
 						ResourceRef: []config.ResourceReference{
 							{
+								Name:  "commonPipelineEnvironment",
+								Param: "custom/dockerConfigJSON",
+							},
+
+							{
 								Name: "dockerConfigJsonCredentialsId",
 								Type: "secret",
 							},
 
 							{
-								Name:  "",
-								Paths: []string{"$(vaultPath)/docker-config", "$(vaultBasePath)/$(vaultPipelineName)/docker-config", "$(vaultBasePath)/GROUP-SECRETS/docker-config"},
-								Type:  "vaultSecretFile",
+								Name:    "dockerConfigFileVaultSecretName",
+								Type:    "vaultSecretFile",
+								Default: "docker-config",
 							},
 						},
 						Scope:     []string{"PARAMETERS", "STAGES", "STEPS"},
@@ -292,15 +374,6 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Mandatory:   false,
 						Aliases:     []config.Alias{},
 						Default:     os.Getenv("PIPER_filePath"),
-					},
-					{
-						Name:        "includeLayers",
-						ResourceRef: []config.ResourceReference{},
-						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
-						Type:        "bool",
-						Mandatory:   false,
-						Aliases:     []config.Alias{},
-						Default:     false,
 					},
 					{
 						Name:        "timeoutMinutes",
@@ -353,8 +426,17 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
 						Type:        "bool",
 						Mandatory:   false,
-						Aliases:     []config.Alias{{Name: "reuseExisting"}},
+						Aliases:     []config.Alias{{Name: "reuseExisting", Deprecated: true}},
 						Default:     false,
+					},
+					{
+						Name:        "replaceProductId",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
+						Type:        "int",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     0,
 					},
 					{
 						Name: "username",
@@ -366,15 +448,15 @@ func protecodeExecuteScanMetadata() config.StepData {
 							},
 
 							{
-								Name:  "",
-								Paths: []string{"$(vaultPath)/protecode", "$(vaultBasePath)/$(vaultPipelineName)/protecode", "$(vaultBasePath)/GROUP-SECRETS/protecode"},
-								Type:  "vaultSecret",
+								Name:    "protecodeVaultSecretName",
+								Type:    "vaultSecret",
+								Default: "protecode",
 							},
 						},
 						Scope:     []string{"PARAMETERS", "STAGES", "STEPS"},
 						Type:      "string",
 						Mandatory: true,
-						Aliases:   []config.Alias{{Name: "user"}},
+						Aliases:   []config.Alias{{Name: "user", Deprecated: true}},
 						Default:   os.Getenv("PIPER_username"),
 					},
 					{
@@ -387,9 +469,9 @@ func protecodeExecuteScanMetadata() config.StepData {
 							},
 
 							{
-								Name:  "",
-								Paths: []string{"$(vaultPath)/protecode", "$(vaultBasePath)/$(vaultPipelineName)/protecode", "$(vaultBasePath)/GROUP-SECRETS/protecode"},
-								Type:  "vaultSecret",
+								Name:    "protecodeVaultSecretName",
+								Type:    "vaultSecret",
+								Default: "protecode",
 							},
 						},
 						Scope:     []string{"PARAMETERS", "STAGES", "STEPS"},
@@ -397,6 +479,27 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Mandatory: true,
 						Aliases:   []config.Alias{},
 						Default:   os.Getenv("PIPER_password"),
+					},
+					{
+						Name: "userAPIKey",
+						ResourceRef: []config.ResourceReference{
+							{
+								Name:  "protecodeApiKeyCredentialsId",
+								Param: "userAPIKey",
+								Type:  "secret",
+							},
+
+							{
+								Name:    "protecodeApiKeyVaultSecretName",
+								Type:    "vaultSecret",
+								Default: "protecode",
+							},
+						},
+						Scope:     []string{"PARAMETERS", "STAGES", "STEPS"},
+						Type:      "string",
+						Mandatory: false,
+						Aliases:   []config.Alias{},
+						Default:   os.Getenv("PIPER_userAPIKey"),
 					},
 					{
 						Name: "version",
@@ -409,8 +512,26 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Scope:     []string{"PARAMETERS", "STAGES", "STEPS"},
 						Type:      "string",
 						Mandatory: false,
-						Aliases:   []config.Alias{{Name: "artifactVersion"}},
+						Aliases:   []config.Alias{{Name: "artifactVersion", Deprecated: true}},
 						Default:   os.Getenv("PIPER_version"),
+					},
+					{
+						Name:        "customScanVersion",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"GENERAL", "STAGES", "STEPS", "PARAMETERS"},
+						Type:        "string",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     os.Getenv("PIPER_customScanVersion"),
+					},
+					{
+						Name:        "versioningModel",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "GENERAL", "STAGES", "STEPS"},
+						Type:        "string",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     `major`,
 					},
 					{
 						Name:        "pullRequestName",
@@ -421,6 +542,15 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Aliases:     []config.Alias{},
 						Default:     os.Getenv("PIPER_pullRequestName"),
 					},
+					{
+						Name:        "customDataJSONMap",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"GENERAL", "STEPS", "STAGES", "PARAMETERS"},
+						Type:        "string",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     os.Getenv("PIPER_customDataJSONMap"),
+					},
 				},
 			},
 			Outputs: config.StepOutputs{
@@ -429,8 +559,18 @@ func protecodeExecuteScanMetadata() config.StepData {
 						Name: "influx",
 						Type: "influx",
 						Parameters: []map[string]interface{}{
-							{"Name": "step_data"}, {"fields": []map[string]string{{"name": "protecode"}}},
-							{"Name": "protecode_data"}, {"fields": []map[string]string{{"name": "excluded_vulnerabilities"}, {"name": "historical_vulnerabilities"}, {"name": "major_vulnerabilities"}, {"name": "minor_vulnerabilities"}, {"name": "triaged_vulnerabilities"}, {"name": "vulnerabilities"}}},
+							{"name": "step_data", "fields": []map[string]string{{"name": "protecode"}}},
+							{"name": "protecode_data", "fields": []map[string]string{{"name": "excluded_vulnerabilities"}, {"name": "historical_vulnerabilities"}, {"name": "major_vulnerabilities"}, {"name": "minor_vulnerabilities"}, {"name": "triaged_vulnerabilities"}, {"name": "vulnerabilities"}}},
+						},
+					},
+					{
+						Name: "reports",
+						Type: "reports",
+						Parameters: []map[string]interface{}{
+							{"filePattern": "**/toolrun_protecode_*.json", "type": "protecode"},
+							{"type": "protecode"},
+							{"filePattern": "**/protecodeExecuteScan.json", "type": "protecode"},
+							{"filePattern": "**/protecodescan_vulns.json", "type": "protecode"},
 						},
 					},
 				},

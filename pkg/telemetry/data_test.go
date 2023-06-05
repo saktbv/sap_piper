@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package telemetry
 
 import (
@@ -30,7 +33,7 @@ func TestDataToMap(t *testing.T) {
 	assert.Contains(t, result, "e_27")
 	assert.Contains(t, result, "custom27")
 
-	assert.Equal(t, 14, len(result))
+	assert.Equal(t, 15, len(result))
 }
 
 func TestDataToPayload(t *testing.T) {

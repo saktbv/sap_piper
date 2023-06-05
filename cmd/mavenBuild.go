@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SAP/jenkins-library/pkg/buildsettings"
 	"github.com/SAP/jenkins-library/pkg/command"
 	"github.com/SAP/jenkins-library/pkg/log"
 	"github.com/SAP/jenkins-library/pkg/maven"
@@ -17,17 +18,20 @@ import (
 	piperhttp "github.com/SAP/jenkins-library/pkg/http"
 )
 
-func mavenBuild(config mavenBuildOptions, telemetryData *telemetry.CustomData) {
+const (
+	mvnBomFilename = "bom-maven"
+)
+
+func mavenBuild(config mavenBuildOptions, telemetryData *telemetry.CustomData, commonPipelineEnvironment *mavenBuildCommonPipelineEnvironment) {
 	utils := maven.NewUtilsBundle()
 
-	err := runMavenBuild(&config, telemetryData, utils)
+	err := runMavenBuild(&config, telemetryData, utils, commonPipelineEnvironment)
 	if err != nil {
 		log.Entry().WithError(err).Fatal("step execution failed")
 	}
 }
 
-func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomData, utils maven.Utils) error {
-	downloadClient := &piperhttp.Client{}
+func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomData, utils maven.Utils, commonPipelineEnvironment *mavenBuildCommonPipelineEnvironment) error {
 
 	var flags = []string{"-update-snapshots", "--batch-mode"}
 
@@ -43,17 +47,15 @@ func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomDat
 	var defines []string
 	var goals []string
 
-	goals = append(goals, "org.jacoco:jacoco-maven-plugin:prepare-agent")
-
 	if config.Flatten {
 		goals = append(goals, "flatten:flatten")
 		defines = append(defines, "-Dflatten.mode=resolveCiFriendliesOnly", "-DupdatePomFile=true")
 	}
 
 	if config.CreateBOM {
-		goals = append(goals, "org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom")
+		goals = append(goals, "org.cyclonedx:cyclonedx-maven-plugin:2.7.8:makeAggregateBom")
 		createBOMConfig := []string{
-			"-DschemaVersion=1.2",
+			"-DschemaVersion=1.4",
 			"-DincludeBomSerialNumber=true",
 			"-DincludeCompileScope=true",
 			"-DincludeProvidedScope=true",
@@ -62,9 +64,12 @@ func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomDat
 			"-DincludeTestScope=false",
 			"-DincludeLicenseText=false",
 			"-DoutputFormat=xml",
+			"-DoutputName=" + mvnBomFilename,
 		}
 		defines = append(defines, createBOMConfig...)
 	}
+
+	goals = append(goals, "org.jacoco:jacoco-maven-plugin:prepare-agent")
 
 	if config.Verify {
 		goals = append(goals, "verify")
@@ -85,12 +90,35 @@ func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomDat
 
 	_, err := maven.Execute(&mavenOptions, utils)
 
+	if err != nil {
+		return errors.Wrapf(err, "failed to execute maven build for goal(s) '%v'", goals)
+	}
+
+	log.Entry().Debugf("creating build settings information...")
+	stepName := "mavenBuild"
+	dockerImage, err := GetDockerImageValue(stepName)
+	if err != nil {
+		return err
+	}
+
+	mavenConfig := buildsettings.BuildOptions{
+		Profiles:                    config.Profiles,
+		GlobalSettingsFile:          config.GlobalSettingsFile,
+		LogSuccessfulMavenTransfers: config.LogSuccessfulMavenTransfers,
+		CreateBOM:                   config.CreateBOM,
+		Publish:                     config.Publish,
+		BuildSettingsInfo:           config.BuildSettingsInfo,
+		DockerImage:                 dockerImage,
+	}
+	buildSettingsInfo, err := buildsettings.CreateBuildSettingsInfo(&mavenConfig, stepName)
+	if err != nil {
+		log.Entry().Warnf("failed to create build settings info: %v", err)
+	}
+	commonPipelineEnvironment.custom.buildSettingsInfo = buildSettingsInfo
+
 	if err == nil {
 		if config.Publish && !config.Verify {
 			log.Entry().Infof("publish detected, running mvn deploy")
-
-			runner := &command.Command{}
-			fileUtils := &piperutils.Files{}
 
 			if (len(config.AltDeploymentRepositoryID) > 0) && (len(config.AltDeploymentRepositoryPassword) > 0) && (len(config.AltDeploymentRepositoryUser) > 0) {
 				projectSettingsFilePath, err := createOrUpdateProjectSettingsXML(config.ProjectSettingsFile, config.AltDeploymentRepositoryID, config.AltDeploymentRepositoryUser, config.AltDeploymentRepositoryPassword, utils)
@@ -105,10 +133,19 @@ func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomDat
 				deployFlags = append(deployFlags, "-DaltDeploymentRepository="+config.AltDeploymentRepositoryID+"::default::"+config.AltDeploymentRepositoryURL)
 			}
 
-			if err := loadRemoteRepoCertificates(config.CustomTLSCertificateLinks, downloadClient, &deployFlags, runner, fileUtils); err != nil {
-				log.SetErrorCategory(log.ErrorInfrastructure)
-				return err
+			downloadClient := &piperhttp.Client{}
+			downloadClient.SetOptions(piperhttp.ClientOptions{})
+			runner := &command.Command{
+				StepName: "mavenBuild",
 			}
+			fileUtils := &piperutils.Files{}
+			if len(config.CustomTLSCertificateLinks) > 0 {
+				if err := loadRemoteRepoCertificates(config.CustomTLSCertificateLinks, downloadClient, &deployFlags, runner, fileUtils, config.JavaCaCertFilePath); err != nil {
+					log.SetErrorCategory(log.ErrorInfrastructure)
+					return err
+				}
+			}
+
 			mavenOptions.Flags = deployFlags
 			mavenOptions.Goals = []string{"deploy"}
 			mavenOptions.Defines = []string{}
@@ -118,6 +155,7 @@ func runMavenBuild(config *mavenBuildOptions, telemetryData *telemetry.CustomDat
 			log.Entry().Infof("publish not detected, ignoring maven deploy")
 		}
 	}
+
 	return err
 }
 
@@ -137,12 +175,41 @@ func createOrUpdateProjectSettingsXML(projectSettingsFile string, altDeploymentR
 	}
 }
 
-func loadRemoteRepoCertificates(certificateList []string, client piperhttp.Downloader, flags *[]string, runner command.ExecRunner, fileUtils piperutils.FileUtils) error {
-	trustStore := filepath.Join(getWorkingDirForTrustStore(), ".pipeline", "keystore.jks")
+func loadRemoteRepoCertificates(certificateList []string, client piperhttp.Downloader, flags *[]string, runner command.ExecRunner, fileUtils piperutils.FileUtils, javaCaCertFilePath string) error {
+	//TODO: make use of java/keytool package
+	existingJavaCaCerts := filepath.Join(os.Getenv("JAVA_HOME"), "jre", "lib", "security", "cacerts")
+
+	if len(javaCaCertFilePath) > 0 {
+		existingJavaCaCerts = javaCaCertFilePath
+	}
+
+	exists, err := fileUtils.FileExists(existingJavaCaCerts)
+
+	if err != nil {
+		return errors.Wrap(err, "Could not find the existing java cacerts")
+	}
+
+	if !exists {
+		return errors.Wrap(err, "Could not find the existing java cacerts")
+	}
+
+	trustStore := filepath.Join(".pipeline", "mavenCaCerts")
+
+	log.Entry().Infof("copying java cacerts : %s to new cacerts : %s", existingJavaCaCerts, trustStore)
+	_, fileUtilserr := fileUtils.Copy(existingJavaCaCerts, trustStore)
+
+	if fileUtilserr != nil {
+		return errors.Wrap(err, "Could not copy existing cacerts into new cacerts location ")
+	}
+
+	if err := fileUtils.Chmod(trustStore, 0666); err != nil {
+		return errors.Wrap(err, "unable to provide correct permission to trust store")
+	}
+
 	log.Entry().Infof("using trust store %s", trustStore)
 
 	if exists, _ := fileUtils.FileExists(trustStore); exists {
-		maven_opts := "-Djavax.net.ssl.trustStore=" + trustStore + " -Djavax.net.ssl.trustStorePassword=changeit"
+		maven_opts := "-Djavax.net.ssl.trustStore=.pipeline/mavenCaCerts -Djavax.net.ssl.trustStorePassword=changeit"
 		err := os.Setenv("MAVEN_OPTS", maven_opts)
 		if err != nil {
 			return errors.Wrap(err, "Could not create MAVEN_OPTS environment variable ")
@@ -176,25 +243,11 @@ func loadRemoteRepoCertificates(certificateList []string, client piperhttp.Downl
 				return errors.Wrap(err, "Adding certificate to keystore failed")
 			}
 		}
-
-		maven_opts := "-Djavax.net.ssl.trustStore=.pipeline/keystore.jks -Djavax.net.ssl.trustStorePassword=changeit"
-		err := os.Setenv("MAVEN_OPTS", maven_opts)
-		if err != nil {
-			return errors.Wrap(err, "Could not create MAVEN_OPTS environment variable ")
-		}
-		log.Entry().WithField("trust store", trustStore).Info("Using local trust store")
+		log.Entry().Infof("custom tls certificates successfully added to the trust store %s", trustStore)
 	} else {
 		log.Entry().Debug("Download of TLS certificates skipped")
 	}
 	return nil
-}
-
-func getWorkingDirForTrustStore() string {
-	workingDir, err := os.Getwd()
-	if err != nil {
-		log.Entry().WithError(err).WithField("path", workingDir).Debug("Retrieving of work directory failed")
-	}
-	return workingDir
 }
 
 func getTempDirForCertFile() string {

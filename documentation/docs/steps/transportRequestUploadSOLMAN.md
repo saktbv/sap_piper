@@ -7,13 +7,13 @@
 * You have an SAP Solution Manager user account and the roles required for uploading. See [SAP Solution Manager Administration](https://help.sap.com/viewer/c413647f87a54db59d18cb074ce3dafd/7.2.12/en-US/11505ddff03c4d74976dae648743e10e.html).
 * You have a change document to which your transport request is coupled.
 * You have a transport request, which is the target container of the upload.
-* You have installed the Change Management Client with the needed certificates. See [Change Management Client](#Change Management Client).
+* You have installed the Change Management Client with the needed certificates. See [Change Management Client](#Change-Management-Client).
 
 ## Change Management Client
 
 The Change Management Client (CM Client) handles the access to SAP Solution Manager.
 The CM Client is a software running under Linux, which can initiate basic change management tasks
-in the Solution Manager as well as in the CTS. The client is used by default
+in the Solution Manager. The client is used by default
 as a [Docker image](https://hub.docker.com/r/ppiper/cm-client),
 but can also be installed as a [command line tool](https://github.com/SAP/devops-cm-client).
 

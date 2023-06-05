@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
@@ -34,11 +37,12 @@ func TestCloudFoundryCreateService(t *testing.T) {
 			CfService:             "testService",
 			CfServiceInstanceName: "testName",
 			CfServicePlan:         "testPlan",
+			CfAsync:               false,
 		}
 		error := runCloudFoundryCreateService(&config, &telemetryData, cf)
 		if assert.NoError(t, error) {
 			assert.Equal(t, []mock.ExecCall{{Execution: (*mock.Execution)(nil), Async: false, Exec: "cf", Params: []string{"login", "-a", "https://api.endpoint.com", "-o", "testOrg", "-s", "testSpace", "-u", "testUser", "-p", "testPassword"}},
-				{Execution: (*mock.Execution)(nil), Async: false, Exec: "cf", Params: []string{"create-service", "testService", "testPlan", "testName"}},
+				{Execution: (*mock.Execution)(nil), Async: false, Exec: "cf", Params: []string{"create-service", "testService", "testPlan", "testName", "--wait"}},
 				{Execution: (*mock.Execution)(nil), Async: false, Exec: "cf", Params: []string{"logout"}}},
 				m.Calls)
 		}
@@ -56,6 +60,7 @@ func TestCloudFoundryCreateService(t *testing.T) {
 			CfServiceInstanceName: "testName",
 			CfServicePlan:         "testPlan",
 			CfServiceTags:         "testTag, testTag2",
+			CfAsync:               true,
 		}
 		error := runCloudFoundryCreateService(&config, &telemetryData, cf)
 		if assert.NoError(t, error) {
@@ -77,6 +82,7 @@ func TestCloudFoundryCreateService(t *testing.T) {
 			CfServiceInstanceName: "testName",
 			CfServicePlan:         "testPlan",
 			CfServiceBroker:       "testBroker",
+			CfAsync:               true,
 		}
 		error := runCloudFoundryCreateService(&config, &telemetryData, cf)
 		if assert.NoError(t, error) {
@@ -98,6 +104,7 @@ func TestCloudFoundryCreateService(t *testing.T) {
 			CfServiceInstanceName: "testName",
 			CfServicePlan:         "testPlan",
 			CfCreateServiceConfig: "testConfig.json",
+			CfAsync:               true,
 		}
 		error := runCloudFoundryCreateService(&config, &telemetryData, cf)
 		if assert.NoError(t, error) {
@@ -118,35 +125,32 @@ func TestCloudFoundryCreateService(t *testing.T) {
 	t.Run("Create service: variable substitution in-line", func(t *testing.T) {
 		defer cfMockCleanup(m)
 
-		dir, err := ioutil.TempDir("", "test variable substitution")
-		if err != nil {
-			t.Fatal("Failed to create temporary directory")
-		}
+		dir := t.TempDir()
 		oldCWD, _ := os.Getwd()
 		_ = os.Chdir(dir)
 		// clean up tmp dir
 		defer func() {
 			_ = os.Chdir(oldCWD)
-			_ = os.RemoveAll(dir)
 		}()
 
-		manifestFileString := `  
+		manifestFileString := `
 		---
 		create-services:
 		- name:   ((name))
 		  broker: "testBroker"
 		  plan:   "testPlan"
-		
+
 		- name:   ((name2))
 		  broker: "testBroker"
 		  plan:   "testPlan"
-		
+
 		- name:   "test3"
 		  broker: "testBroker"
 		  plan:   "testPlan"`
 
 		manifestFileStringBody := []byte(manifestFileString)
-		err = ioutil.WriteFile("manifestTest.yml", manifestFileStringBody, 0644)
+		err := ioutil.WriteFile("manifestTest.yml", manifestFileStringBody, 0644)
+		assert.NoError(t, err)
 
 		var manifestVariables = []string{"name1=Test1", "name2=Test2"}
 
@@ -158,6 +162,7 @@ func TestCloudFoundryCreateService(t *testing.T) {
 			Password:          "testPassword",
 			ServiceManifest:   "manifestTest.yml",
 			ManifestVariables: manifestVariables,
+			CfAsync:           false, // should be ignored
 		}
 		error := runCloudFoundryCreateService(&config, &telemetryData, cf)
 		if assert.NoError(t, error) {
@@ -171,40 +176,39 @@ func TestCloudFoundryCreateService(t *testing.T) {
 	t.Run("Create service: variable substitution with variable substitution manifest file", func(t *testing.T) {
 		defer cfMockCleanup(m)
 
-		dir, err := ioutil.TempDir("", "test variable substitution")
-		if err != nil {
-			t.Fatal("Failed to create temporary directory")
-		}
+		dir := t.TempDir()
 		oldCWD, _ := os.Getwd()
 		_ = os.Chdir(dir)
 		// clean up tmp dir
 		defer func() {
 			_ = os.Chdir(oldCWD)
-			_ = os.RemoveAll(dir)
 		}()
 		varsFileString := `name: test1
 		name2: test2`
 
-		manifestFileString := `  
+		manifestFileString := `
 		---
 		create-services:
 		- name:   ((name))
 		  broker: "testBroker"
 		  plan:   "testPlan"
-		
+
 		- name:   ((name2))
 		  broker: "testBroker"
 		  plan:   "testPlan"
-		
+
 		- name:   "test3"
 		  broker: "testBroker"
 		  plan:   "testPlan"`
 
 		varsFileStringBody := []byte(varsFileString)
 		manifestFileStringBody := []byte(manifestFileString)
-		err = ioutil.WriteFile("varsTest.yml", varsFileStringBody, 0644)
+		err := ioutil.WriteFile("varsTest.yml", varsFileStringBody, 0644)
+		assert.NoError(t, err)
 		err = ioutil.WriteFile("varsTest2.yml", varsFileStringBody, 0644)
+		assert.NoError(t, err)
 		err = ioutil.WriteFile("manifestTest.yml", manifestFileStringBody, 0644)
+		assert.NoError(t, err)
 
 		var manifestVariablesFiles = []string{"varsTest.yml", "varsTest2.yml"}
 		config := cloudFoundryCreateServiceOptions{

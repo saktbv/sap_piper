@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
@@ -7,12 +10,15 @@ import (
 )
 
 func TestMavenBuild(t *testing.T) {
+
+	cpe := mavenBuildCommonPipelineEnvironment{}
+
 	t.Run("mavenBuild should install the artifact", func(t *testing.T) {
 		mockedUtils := newMavenMockUtils()
 
 		config := mavenBuildOptions{}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Equal(t, mockedUtils.Calls[0].Exec, "mvn")
@@ -25,7 +31,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Equal(t, mockedUtils.Calls[0].Exec, "mvn")
@@ -37,7 +43,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{Flatten: true}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Contains(t, mockedUtils.Calls[0].Params, "flatten:flatten")
@@ -50,7 +56,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{Verify: true}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Contains(t, mockedUtils.Calls[0].Params, "verify")
@@ -62,11 +68,11 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{CreateBOM: true}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
-		assert.Contains(t, mockedUtils.Calls[0].Params, "org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom")
-		assert.Contains(t, mockedUtils.Calls[0].Params, "-DschemaVersion=1.2")
+		assert.Contains(t, mockedUtils.Calls[0].Params, "org.cyclonedx:cyclonedx-maven-plugin:2.7.8:makeAggregateBom")
+		assert.Contains(t, mockedUtils.Calls[0].Params, "-DschemaVersion=1.4")
 		assert.Contains(t, mockedUtils.Calls[0].Params, "-DincludeBomSerialNumber=true")
 		assert.Contains(t, mockedUtils.Calls[0].Params, "-DincludeCompileScope=true")
 		assert.Contains(t, mockedUtils.Calls[0].Params, "-DincludeProvidedScope=true")
@@ -75,6 +81,7 @@ func TestMavenBuild(t *testing.T) {
 		assert.Contains(t, mockedUtils.Calls[0].Params, "-DincludeTestScope=false")
 		assert.Contains(t, mockedUtils.Calls[0].Params, "-DincludeLicenseText=false")
 		assert.Contains(t, mockedUtils.Calls[0].Params, "-DoutputFormat=xml")
+		assert.Contains(t, mockedUtils.Calls[0].Params, "-DoutputName=bom-maven")
 	})
 
 	t.Run("mavenBuild include install and deploy when publish is true", func(t *testing.T) {
@@ -82,7 +89,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{Publish: true, Verify: false}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Contains(t, mockedUtils.Calls[0].Params, "install")
@@ -96,7 +103,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{Publish: true, Verify: false}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Contains(t, mockedUtils.Calls[1].Params, "-Dmaven.main.skip=true")
@@ -110,7 +117,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{Publish: true, Verify: false, AltDeploymentRepositoryID: "ID", AltDeploymentRepositoryURL: "http://sampleRepo.com"}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Contains(t, mockedUtils.Calls[1].Params, "-DaltDeploymentRepository=ID::default::http://sampleRepo.com")
@@ -121,7 +128,7 @@ func TestMavenBuild(t *testing.T) {
 
 		config := mavenBuildOptions{Profiles: []string{"profile1", "profile2"}}
 
-		err := runMavenBuild(&config, nil, &mockedUtils)
+		err := runMavenBuild(&config, nil, &mockedUtils, &cpe)
 
 		assert.Nil(t, err)
 		assert.Contains(t, mockedUtils.Calls[0].Params, "--activate-profiles")

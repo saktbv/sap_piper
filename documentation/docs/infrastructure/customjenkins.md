@@ -1,9 +1,5 @@
 # Custom Jenkins Setup
 
-Although we recommend using the Cx Server, you can also run project "Piper" on your own Jenkins installation. In this case, however, you have to care for some settings the Cx Server gives you for free. Also, the support of non-Cx Server installations is challenging.
-
-This section describes the adjustments that might be necessary.
-
 ## Requirements
 
 * You have installed Java Runtime Environment 8.
@@ -45,14 +41,12 @@ cat plugins.txt | awk '{system("java " "-jar jenkins-cli.jar -s http://localhost
 Shared libraries extending the Jenkins pipeline are defined within the Jenkins system configuration. A library is defined by a link to its source repository and an appropriate version identifier. To add the project "Piper"s library, execute the following steps:
 
 1. Open the Jenkins UI under `http://<jenkins-server-address>:<http-port>`, login with administration privileges, and choose **Manage Jenkins > Configure System**.
-   <p align="center">
-   ![Configure System](../images/JenkinsHomeMenuManageConfig.png "Configure System")
-   </p>
+
+    ![Configure System](../images/JenkinsHomeMenuManageConfig.png "Configure System")
 
 1. Scroll down to section **Global Pipeline Libraries** and choose the **Add** button. A new library is created.
-   <p align="center">
-   ![Add Library](../images/JenkinsConfigSystemLibrary-Add.png "Add Library")
-   </p>
+
+    ![Add Library](../images/JenkinsConfigSystemLibrary-Add.png "Add Library")
 
 1. For **Library Name**, enter `piper-lib-os`.
 
@@ -63,9 +57,8 @@ Shared libraries extending the Jenkins pipeline are defined within the Jenkins s
 1. For **Source Code Management**, choose **Git**.
 
 1. For **Project Repository**, enter the GitHub URL of the project Piper shared library `https://github.com/SAP/jenkins-library`.
-   <p align="center">
-   ![Library Setup](../images/JenkinsConfigSystemLibrary-Edit.png "Library Setup")
-   </p>
+
+    ![Library Setup](../images/JenkinsConfigSystemLibrary-Edit.png "Library Setup")
 
 1. Save your changes.
 

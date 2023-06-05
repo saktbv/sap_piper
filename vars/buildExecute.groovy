@@ -70,7 +70,7 @@ void call(Map parameters = [:]) {
 
         // telemetry reporting
         utils.pushToSWA([stepParam1: config.buildTool, 'buildTool': config.buildTool], config)
-        
+
         switch(config.buildTool){
             case 'maven':
                 mavenBuild script: script
@@ -86,29 +86,7 @@ void call(Map parameters = [:]) {
                 npmExecuteScripts script: script, install: config.npmInstall, runScripts: config.npmRunScripts
                 break
             case ['docker', 'kaniko']:
-                DockerUtils dockerUtils = new DockerUtils(script)
-                if (config.buildTool == 'docker' && !dockerUtils.withDockerDaemon()) {
-                    config.buildTool = 'kaniko'
-                    echo "[${STEP_NAME}] No Docker daemon available, thus switching to Kaniko build"
-                }
-
-                ConfigurationHelper.newInstance(this, config)
-                    .withMandatoryProperty('dockerImageName')
-                    .withMandatoryProperty('dockerImageTag')
-
-                def dockerImageNameAndTag = "${config.dockerImageName}:${config.dockerImageTag}"
-
-                if (config.buildTool == 'kaniko') {
-                    def containerImageNameAndTag = config.dockerRegistryUrl ? "${dockerUtils.getRegistryFromUrl(config.dockerRegistryUrl)}/${dockerImageNameAndTag}" : ''
-                    kanikoExecute script: script, containerImageNameAndTag: containerImageNameAndTag
-                } else {
-                    def dockerBuildImage = docker.build(dockerImageNameAndTag, "${config.containerBuildOptions ?: ''} .")
-                    //only push if registry is defined
-                    if (config.dockerRegistryUrl) {
-                        containerPushToRegistry script: script, dockerBuildImage: dockerBuildImage, dockerRegistryUrl: config.dockerRegistryUrl
-                    }
-                }
-                script.commonPipelineEnvironment.setValue('containerImage', dockerImageNameAndTag)
+                kanikoExecute script: script
                 break
             default:
                 if (config.dockerImage && config.dockerCommand) {

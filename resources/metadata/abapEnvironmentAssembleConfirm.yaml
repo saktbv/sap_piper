@@ -1,8 +1,8 @@
 metadata:
   name: abapEnvironmentAssembleConfirm
-  description: "Confirm the Delivery of Assembly for installation, support package or patch in SAP Cloud Platform ABAP Environment system"
+  description: "Confirm the Delivery of Assembly for installation, support package or patch in SAP BTP ABAP Environment system"
   longDescription: |
-    This step confirms the assemblies of provided [installations, support packages or patches] in SAP Cloud Platform ABAP Environment system
+    This step confirms the assemblies of provided [installations, support packages or patches] in SAP BTP ABAP Environment system
 spec:
   inputs:
     secrets:
@@ -71,13 +71,14 @@ spec:
           - name: cloudFoundry/serviceKeyName
           - name: cfServiceKey
       - name: host
-        description: Specifies the host address of the SAP Cloud Platform ABAP Environment system
+        description: Specifies the host address of the SAP BTP ABAP Environment system
         type: string
         mandatory: false
         scope:
           - PARAMETERS
           - STAGES
           - STEPS
+          - GENERAL
       - name: username
         type: string
         description: User for either the Cloud Foundry API or the Communication Arrangement for SAP_COM_0582
@@ -116,6 +117,15 @@ spec:
           - PARAMETERS
           - STAGES
           - STEPS
+      - name: certificateNames
+        type: "[]string"
+        description: certificates for the backend system, this certificates needs to be stored in .pipeline/trustStore
+        mandatory: false
+        scope:
+          - PARAMETERS
+          - STAGES
+          - STEPS
+          - GENERAL
   outputs:
     resources:
       - name: commonPipelineEnvironment
@@ -124,4 +134,4 @@ spec:
           - name: abap/addonDescriptor
   containers:
     - name: cf
-      image: ppiper/cf-cli:7
+      image: ppiper/cf-cli:v12

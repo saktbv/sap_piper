@@ -5,21 +5,54 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/SAP/jenkins-library/pkg/config"
 	"github.com/SAP/jenkins-library/pkg/log"
+	"github.com/SAP/jenkins-library/pkg/piperenv"
 	"github.com/SAP/jenkins-library/pkg/splunk"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
+	"github.com/SAP/jenkins-library/pkg/validation"
 	"github.com/spf13/cobra"
 )
 
 type integrationArtifactTriggerIntegrationTestOptions struct {
-	IFlowServiceKey         string `json:"iFlowServiceKey,omitempty"`
-	IntegrationFlowID       string `json:"integrationFlowId,omitempty"`
-	IFlowServiceEndpointURL string `json:"iFlowServiceEndpointUrl,omitempty"`
-	ContentType             string `json:"contentType,omitempty"`
-	MessageBodyPath         string `json:"messageBodyPath,omitempty"`
+	IntegrationFlowServiceKey         string `json:"integrationFlowServiceKey,omitempty"`
+	IntegrationFlowID                 string `json:"integrationFlowId,omitempty"`
+	IntegrationFlowServiceEndpointURL string `json:"integrationFlowServiceEndpointUrl,omitempty"`
+	ContentType                       string `json:"contentType,omitempty"`
+	MessageBodyPath                   string `json:"messageBodyPath,omitempty"`
+}
+
+type integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment struct {
+	custom struct {
+		integrationFlowTriggerIntegrationTestResponseBody    string
+		integrationFlowTriggerIntegrationTestResponseHeaders string
+	}
+}
+
+func (p *integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment) persist(path, resourceName string) {
+	content := []struct {
+		category string
+		name     string
+		value    interface{}
+	}{
+		{category: "custom", name: "integrationFlowTriggerIntegrationTestResponseBody", value: p.custom.integrationFlowTriggerIntegrationTestResponseBody},
+		{category: "custom", name: "integrationFlowTriggerIntegrationTestResponseHeaders", value: p.custom.integrationFlowTriggerIntegrationTestResponseHeaders},
+	}
+
+	errCount := 0
+	for _, param := range content {
+		err := piperenv.SetResourceParameter(path, resourceName, filepath.Join(param.category, param.name), param.value)
+		if err != nil {
+			log.Entry().WithError(err).Error("Error persisting piper environment.")
+			errCount++
+		}
+	}
+	if errCount > 0 {
+		log.Entry().Error("failed to persist Piper environment")
+	}
 }
 
 // IntegrationArtifactTriggerIntegrationTestCommand Test the service endpoint of your iFlow
@@ -29,16 +62,21 @@ func IntegrationArtifactTriggerIntegrationTestCommand() *cobra.Command {
 	metadata := integrationArtifactTriggerIntegrationTestMetadata()
 	var stepConfig integrationArtifactTriggerIntegrationTestOptions
 	var startTime time.Time
+	var commonPipelineEnvironment integrationArtifactTriggerIntegrationTestCommonPipelineEnvironment
 	var logCollector *log.CollectorHook
+	var splunkClient *splunk.Splunk
+	telemetryClient := &telemetry.Telemetry{}
 
 	var createIntegrationArtifactTriggerIntegrationTestCmd = &cobra.Command{
 		Use:   STEP_NAME,
 		Short: "Test the service endpoint of your iFlow",
-		Long:  `With this step you can test your intergration flow  exposed by SAP Cloud Platform Integration on a tenant using OData API.Learn more about the SAP Cloud Integration remote API for getting service endpoint of deployed integration artifact [here](https://help.sap.com/viewer/368c481cd6954bdfa5d0435479fd4eaf/Cloud/en-US/d1679a80543f46509a7329243b595bdb.html).`,
+		Long:  `With this step you can test your intergration flow  exposed by SAP BTP Integration on a tenant using OData API.Learn more about the SAP Cloud Integration remote API for getting service endpoint of deployed integration artifact [here](https://help.sap.com/viewer/368c481cd6954bdfa5d0435479fd4eaf/Cloud/en-US/d1679a80543f46509a7329243b595bdb.html).`,
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			startTime = time.Now()
 			log.SetStepName(STEP_NAME)
 			log.SetVerbose(GeneralConfig.Verbose)
+
+			GeneralConfig.GitHubAccessTokens = ResolveAccessTokens(GeneralConfig.GitHubTokens)
 
 			path, _ := os.Getwd()
 			fatalHook := &log.FatalHook{CorrelationID: GeneralConfig.CorrelationID, Path: path}
@@ -49,7 +87,7 @@ func IntegrationArtifactTriggerIntegrationTestCommand() *cobra.Command {
 				log.SetErrorCategory(log.ErrorConfiguration)
 				return err
 			}
-			log.RegisterSecret(stepConfig.IFlowServiceKey)
+			log.RegisterSecret(stepConfig.IntegrationFlowServiceKey)
 
 			if len(GeneralConfig.HookConfig.SentryConfig.Dsn) > 0 {
 				sentryHook := log.NewSentryHook(GeneralConfig.HookConfig.SentryConfig.Dsn, GeneralConfig.CorrelationID)
@@ -57,36 +95,53 @@ func IntegrationArtifactTriggerIntegrationTestCommand() *cobra.Command {
 			}
 
 			if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
+				splunkClient = &splunk.Splunk{}
 				logCollector = &log.CollectorHook{CorrelationID: GeneralConfig.CorrelationID}
 				log.RegisterHook(logCollector)
+			}
+
+			if err = log.RegisterANSHookIfConfigured(GeneralConfig.CorrelationID); err != nil {
+				log.Entry().WithError(err).Warn("failed to set up SAP Alert Notification Service log hook")
+			}
+
+			validation, err := validation.New(validation.WithJSONNamesForStructFields(), validation.WithPredefinedErrorMessages())
+			if err != nil {
+				return err
+			}
+			if err = validation.ValidateStruct(stepConfig); err != nil {
+				log.SetErrorCategory(log.ErrorConfiguration)
+				return err
 			}
 
 			return nil
 		},
 		Run: func(_ *cobra.Command, _ []string) {
-			telemetryData := telemetry.CustomData{}
-			telemetryData.ErrorCode = "1"
+			stepTelemetryData := telemetry.CustomData{}
+			stepTelemetryData.ErrorCode = "1"
 			handler := func() {
+				commonPipelineEnvironment.persist(GeneralConfig.EnvRootPath, "commonPipelineEnvironment")
 				config.RemoveVaultSecretFiles()
-				telemetryData.Duration = fmt.Sprintf("%v", time.Since(startTime).Milliseconds())
-				telemetryData.ErrorCategory = log.GetErrorCategory().String()
-				telemetry.Send(&telemetryData)
+				stepTelemetryData.Duration = fmt.Sprintf("%v", time.Since(startTime).Milliseconds())
+				stepTelemetryData.ErrorCategory = log.GetErrorCategory().String()
+				stepTelemetryData.PiperCommitHash = GitCommit
+				telemetryClient.SetData(&stepTelemetryData)
+				telemetryClient.Send()
 				if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
-					splunk.Send(&telemetryData, logCollector)
+					splunkClient.Send(telemetryClient.GetData(), logCollector)
 				}
 			}
 			log.DeferExitHandler(handler)
 			defer handler()
-			telemetry.Initialize(GeneralConfig.NoTelemetry, STEP_NAME)
+			telemetryClient.Initialize(GeneralConfig.NoTelemetry, STEP_NAME)
 			if len(GeneralConfig.HookConfig.SplunkConfig.Dsn) > 0 {
-				splunk.Initialize(GeneralConfig.CorrelationID,
+				splunkClient.Initialize(GeneralConfig.CorrelationID,
 					GeneralConfig.HookConfig.SplunkConfig.Dsn,
 					GeneralConfig.HookConfig.SplunkConfig.Token,
 					GeneralConfig.HookConfig.SplunkConfig.Index,
 					GeneralConfig.HookConfig.SplunkConfig.SendLogs)
 			}
-			integrationArtifactTriggerIntegrationTest(stepConfig, &telemetryData)
-			telemetryData.ErrorCode = "0"
+			integrationArtifactTriggerIntegrationTest(stepConfig, &stepTelemetryData, &commonPipelineEnvironment)
+			stepTelemetryData.ErrorCode = "0"
 			log.Entry().Info("SUCCESS")
 		},
 	}
@@ -96,15 +151,15 @@ func IntegrationArtifactTriggerIntegrationTestCommand() *cobra.Command {
 }
 
 func addIntegrationArtifactTriggerIntegrationTestFlags(cmd *cobra.Command, stepConfig *integrationArtifactTriggerIntegrationTestOptions) {
-	cmd.Flags().StringVar(&stepConfig.IFlowServiceKey, "iFlowServiceKey", os.Getenv("PIPER_iFlowServiceKey"), "Service key JSON string to access the Process Integration Runtime service instance of plan 'integration-flow'")
+	cmd.Flags().StringVar(&stepConfig.IntegrationFlowServiceKey, "integrationFlowServiceKey", os.Getenv("PIPER_integrationFlowServiceKey"), "Service key JSON string to access the Process Integration Runtime service instance of plan 'integration-flow'")
 	cmd.Flags().StringVar(&stepConfig.IntegrationFlowID, "integrationFlowId", os.Getenv("PIPER_integrationFlowId"), "Specifies the ID of the Integration Flow artifact")
-	cmd.Flags().StringVar(&stepConfig.IFlowServiceEndpointURL, "iFlowServiceEndpointUrl", os.Getenv("PIPER_iFlowServiceEndpointUrl"), "Specifies the URL endpoint of the iFlow. Please provide in the format `<protocol>://<host>:<port>`. Supported protocols are `http` and `https`.")
+	cmd.Flags().StringVar(&stepConfig.IntegrationFlowServiceEndpointURL, "integrationFlowServiceEndpointUrl", os.Getenv("PIPER_integrationFlowServiceEndpointUrl"), "Specifies the URL endpoint of the iFlow. Please provide in the format `<protocol>://<host>:<port>`. Supported protocols are `http` and `https`.")
 	cmd.Flags().StringVar(&stepConfig.ContentType, "contentType", os.Getenv("PIPER_contentType"), "Specifies the content type of the file defined in messageBodyPath e.g. application/json")
 	cmd.Flags().StringVar(&stepConfig.MessageBodyPath, "messageBodyPath", os.Getenv("PIPER_messageBodyPath"), "Speficfies the relative file path to the message body.")
 
-	cmd.MarkFlagRequired("iFlowServiceKey")
+	cmd.MarkFlagRequired("integrationFlowServiceKey")
 	cmd.MarkFlagRequired("integrationFlowId")
-	cmd.MarkFlagRequired("iFlowServiceEndpointUrl")
+	cmd.MarkFlagRequired("integrationFlowServiceEndpointUrl")
 }
 
 // retrieve step metadata
@@ -118,15 +173,15 @@ func integrationArtifactTriggerIntegrationTestMetadata() config.StepData {
 		Spec: config.StepSpec{
 			Inputs: config.StepInputs{
 				Secrets: []config.StepSecrets{
-					{Name: "iFlowServiceKeyCredentialsId", Description: "Jenkins secret text credential ID containing the service key to the Process Integration Runtime service instance of plan 'integration-flow'", Type: "jenkins"},
+					{Name: "integrationFlowServiceKeyCredentialsId", Description: "Jenkins secret text credential ID containing the service key to the Process Integration Runtime service instance of plan 'integration-flow'", Type: "jenkins"},
 				},
 				Parameters: []config.StepParameters{
 					{
-						Name: "iFlowServiceKey",
+						Name: "integrationFlowServiceKey",
 						ResourceRef: []config.ResourceReference{
 							{
-								Name:  "iFlowServiceKeyCredentialsId",
-								Param: "iFlowServiceKey",
+								Name:  "integrationFlowServiceKeyCredentialsId",
+								Param: "integrationFlowServiceKey",
 								Type:  "secret",
 							},
 						},
@@ -134,7 +189,7 @@ func integrationArtifactTriggerIntegrationTestMetadata() config.StepData {
 						Type:      "string",
 						Mandatory: true,
 						Aliases:   []config.Alias{},
-						Default:   os.Getenv("PIPER_iFlowServiceKey"),
+						Default:   os.Getenv("PIPER_integrationFlowServiceKey"),
 					},
 					{
 						Name:        "integrationFlowId",
@@ -146,18 +201,18 @@ func integrationArtifactTriggerIntegrationTestMetadata() config.StepData {
 						Default:     os.Getenv("PIPER_integrationFlowId"),
 					},
 					{
-						Name: "iFlowServiceEndpointUrl",
+						Name: "integrationFlowServiceEndpointUrl",
 						ResourceRef: []config.ResourceReference{
 							{
 								Name:  "commonPipelineEnvironment",
-								Param: "custom/iFlowServiceEndpoint",
+								Param: "custom/integrationFlowServiceEndpoint",
 							},
 						},
 						Scope:     []string{"PARAMETERS"},
 						Type:      "string",
 						Mandatory: true,
 						Aliases:   []config.Alias{},
-						Default:   os.Getenv("PIPER_iFlowServiceEndpointUrl"),
+						Default:   os.Getenv("PIPER_integrationFlowServiceEndpointUrl"),
 					},
 					{
 						Name:        "contentType",
@@ -176,6 +231,18 @@ func integrationArtifactTriggerIntegrationTestMetadata() config.StepData {
 						Mandatory:   false,
 						Aliases:     []config.Alias{},
 						Default:     os.Getenv("PIPER_messageBodyPath"),
+					},
+				},
+			},
+			Outputs: config.StepOutputs{
+				Resources: []config.StepResources{
+					{
+						Name: "commonPipelineEnvironment",
+						Type: "piperEnvironment",
+						Parameters: []map[string]interface{}{
+							{"name": "custom/integrationFlowTriggerIntegrationTestResponseBody"},
+							{"name": "custom/integrationFlowTriggerIntegrationTestResponseHeaders"},
+						},
 					},
 				},
 			},

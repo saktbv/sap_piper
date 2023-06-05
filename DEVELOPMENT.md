@@ -29,6 +29,8 @@ First you need to set up an appropriate development environment:
 1. Install Go, see [GO Getting Started](https://golang.org/doc/install)
 1. Install an IDE with Go plugins, see for example [Go in Visual Studio Code](https://code.visualstudio.com/docs/languages/go)
 
+**Note:** The Go version to be used is the one specified in the "go.mod" file.
+
 ### Go basics
 
 In order to get yourself started, there is a lot of useful information out there.
@@ -115,20 +117,21 @@ Examples are:
 
 There are certain extensions:
 
-* **aliases** allow alternative parameter names also supporting deeper configuration structures. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/kubernetesdeploy.yaml)
-* **resources** allow to read for example from a shared `commonPipelineEnvironment` which contains information which has been provided by a previous step in the pipeline via an output. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/githubrelease.yaml)
-* **secrets** allow to specify references to Jenkins credentials which can be used in the `groovy` library. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/kubernetesdeploy.yaml)
+* **aliases** allow alternative parameter names also supporting deeper configuration structures. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/kubernetesDeploy.yaml)
+* **resources** allow to read for example from a shared `commonPipelineEnvironment` which contains information which has been provided by a previous step in the pipeline via an output. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/githubPublishRelease.yaml)
+* **secrets** allow to specify references to Jenkins credentials which can be used in the `groovy` library. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/kubernetesDeploy.yaml)
 * **outputs** allow to write to dedicated outputs like
 
-  * Influx metrics. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/checkmarx.yaml)
+  * Influx metrics. [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/checkmarxExecuteScan.yaml)
   * Sharing data via `commonPipelineEnvironment` which can be used by another step as input
 
-* **conditions** allow for example to specify in which case a certain container is used (depending on a configuration parameter). [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/kubernetesdeploy.yaml)
+* **conditions** allow for example to specify in which case a certain container is used (depending on a configuration parameter). [Example](https://github.com/SAP/jenkins-library/blob/master/resources/metadata/kubernetesDeploy.yaml)
 
 ## Best practices for writing piper-go steps
 
 1. [Logging](#logging)
 1. [Error handling](#error-handling)
+1. [HTTP calls](#http-calls)
 
 Implementing a new step starts by adding a new yaml file in `resources/metadata/` and running
 the [step generator](#generating-step-framework). This creates most of the boiler-plate code for the
@@ -226,6 +229,27 @@ log.Entry().WithError(err).Fatal("the error message")
 
 the category will be written into the file `errorDetails.json` and can be used from there in the further pipeline flow.
 Writing the file is handled by [`pkg/log/FatalHook`](pkg/log/fatalHook.go).
+
+### HTTP calls
+
+All HTTP(S) interactions with other systems should be leveraging the [`pkg/http`](pkg/http) to enable capabilities provided
+centrally like automatic retries in case of intermittend HTTP errors or individual and optimized timout or logging capabilities.
+The HTTP package provides a thin wrapper around the standard golang `net/http` package adding just the right bit of sugar on top to
+have more control on common behaviors.
+
+### Automatic retries
+
+Automatic retries have been implemented based on [hashicorp's retryable HTTP client for golang](https://github.com/hashicorp/go-retryablehttp)
+with some extensions and customizations to the HTTP status codes being retried as well as to improve some service specific error situations.
+The client by default retries 15 times until it gives up and regards a specific communication event as being not recoverable. If you know by heart that
+your service is much more stable and cloud live without retry handling or a specifically lower amout of retries, you can easily customize behavior via the
+`ClientOptions` as shown in the sample below:
+
+```golang
+clientOptions := piperhttp.ClientOptions{}
+clientOptions.MaxRetries = -1
+httpClient.SetOptions(clientOptions)
+```
 
 ## Testing
 
@@ -478,6 +502,78 @@ func TestMethod(t *testing.T) {
 }
 ```
 
+### Test pipeline for your fork (Jenkins)
+
+Piper is ececuting the steps of each stage within a container. If you want to test your developments you have to ensure they are part of the image which is used in your test pipeline.
+
+#### Testing Pipeline or Stage Definition changes (Jenkins)
+
+As the pipeline and stage definitions (e.g. \*Pipeline\*Stage\*.groovy files in the vars folder) are directly executed you can easily test them just by referencing to your repo/branch/tag in the jenkinsfile.
+
+```groovy
+@Library('my-piper-lib-os-fork@MyTest') _
+
+abapEnvironmentPipeline script: this
+```
+
+#### Testing changes on Step Level (Jenkins)
+
+To trigger the creation of a "custom" container with your changes you can reuse a feature in piper which is originally meant for executing the integration tests. If the environment variables 'REPOSITORY_UNDER_TEST' (pointing to your forked repo) and 'LIBRARY_VERSION_UNDER_TEST' (pointing to a tag in your forked repo) are set a corresponding container gets created on the fly upon first usage in the pipeline. The drawback is that this takes extra time (1-2 minutes) you have to spend for every execution of the pipeline.
+
+```groovy
+@Library('piper-lib-os') _
+
+env.REPOSITORY_UNDER_TEST       = 'myfork' // e.g. 'myUser/jenkins-library'
+env.LIBRARY_VERSION_UNDER_TEST  = 'MyTag'
+
+abapEnvironmentPipeline script: this
+```
+
+#### Using Parameterized Pipelines (Jenkins)
+
+For test purpose it can be useful to utilize a parameterized pipeline. E.g. to toggle creation of the custom container:
+
+```groovy
+@Library('my-piper-lib-os-fork@MyTest') _
+
+properties([
+    parameters([
+        booleanParam(name: 'toggleSomething', defaultValue: false, description: 'dito'),
+        booleanParam(name: 'testPiperFork', defaultValue: false, description: 'dito'),
+        string(name: 'repoUnderTest', defaultValue: '<MyUser>/jenkins-library', description: 'dito'),
+        string(name: 'tag', defaultValue: 'MyTest', description: 'dito')
+    ])
+])
+
+if (params.testPiperFork == true) {
+    env.REPOSITORY_UNDER_TEST       = params.repoUnderTest
+    env.LIBRARY_VERSION_UNDER_TEST  = params.tag
+}
+
+abapEnvironmentPipeline script: this
+```
+
+or skipping steps/stages with the help of extensions:
+
+```groovy
+void call(Map piperParams) {
+  echo "Start - Extension for stage: ${piperParams.stageName}"
+
+  if (params.toggleSomething == true) {
+    // do something
+    echo "now execute original stage as defined in the template"
+    piperParams.originalStage()
+  } else {
+    // do something else
+    // e.g. only this singele step of the stage
+    somePiperStep( script: piperParams.script, someConfigParameter: '<...>' )
+  }
+  
+  echo "End - Extension for stage: ${piperParams.stageName}"
+}
+return this
+```
+
 ## Debugging
 
 Debugging can be initiated with VS code fairly easily. Compile the binary with specific compiler flags to turn off optimizations `go build -gcflags "all=-N -l" -o piper.exe`.
@@ -508,11 +604,18 @@ Finally, set your breakpoints and use the `Launch` button in the VS code UI to s
 
 ## Release
 
-Releases are performed using [Project "Piper" Action](https://github.com/SAP/project-piper-action).
-We release on schedule (once a week) and on demand.
-To perform a release, the respective action must be invoked for which a convenience script is available in `contrib/perform-release.sh`.
-It requires a personal access token for GitHub with `repo` scope.
-Example usage `PIPER_RELEASE_TOKEN=THIS_IS_MY_TOKEN contrib/perform-release.sh`.
+Releases are performed using GitHub workflows and [Project "Piper" Action](https://github.com/SAP/project-piper-action).
+
+There are two different workflows:
+
+- [weekly release workflow](.github/workflows/release-go.yml) running every Monday at 09:00 UTC.
+- [commit-based workflow](.github/workflows/upload-go-master.yml) which releases the binary as `piper_master` on the [latest release](https://github.com/SAP/jenkins-library/releases/latest).
+
+It is also possible to release on demand using the `contrib/perform-release.sh` script with a personal access token (`repo` scope).
+
+```
+PIPER_RELEASE_TOKEN=<token> contrib/perform-release.sh
+```
 
 ## Pipeline Configuration
 

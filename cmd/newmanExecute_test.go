@@ -1,6 +1,11 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
+	"github.com/google/uuid"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,8 +65,8 @@ func TestRunNewmanExecute(t *testing.T) {
 		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "node", params: []string{"--version"}})
 		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "npm", params: []string{"--version"}})
 		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "npm", params: []string{"install", "newman", "--global", "--quiet", "--prefix=~/.npm-global"}})
-		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "/home/node/.npm-global/bin/newman", params: []string{"run", "localFile.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile.xml", "--reporter-html-export", "target/newman/TEST-localFile.html", "--suppress-exit-code"}})
-		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "/home/node/.npm-global/bin/newman", params: []string{"run", "localFile2.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile2.xml", "--reporter-html-export", "target/newman/TEST-localFile2.html", "--suppress-exit-code"}})
+		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: filepath.FromSlash("/home/node/.npm-global/bin/newman"), params: []string{"run", "localFile.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile.xml", "--reporter-html-export", "target/newman/TEST-localFile.html", "--suppress-exit-code"}})
+		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: filepath.FromSlash("/home/node/.npm-global/bin/newman"), params: []string{"run", "localFile2.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile2.xml", "--reporter-html-export", "target/newman/TEST-localFile2.html", "--suppress-exit-code"}})
 	})
 
 	t.Run("happy path with fail on error", func(t *testing.T) {
@@ -80,8 +85,8 @@ func TestRunNewmanExecute(t *testing.T) {
 		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "node", params: []string{"--version"}})
 		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "npm", params: []string{"--version"}})
 		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "npm", params: []string{"install", "newman", "--global", "--quiet", "--prefix=~/.npm-global"}})
-		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "/home/node/.npm-global/bin/newman", params: []string{"run", "localFile.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile.xml", "--reporter-html-export", "target/newman/TEST-localFile.html"}})
-		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: "/home/node/.npm-global/bin/newman", params: []string{"run", "localFile2.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile2.xml", "--reporter-html-export", "target/newman/TEST-localFile2.html"}})
+		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: filepath.FromSlash("/home/node/.npm-global/bin/newman"), params: []string{"run", "localFile.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile.xml", "--reporter-html-export", "target/newman/TEST-localFile.html"}})
+		assert.Contains(t, utils.executedExecutables, executedExecutables{executable: filepath.FromSlash("/home/node/.npm-global/bin/newman"), params: []string{"run", "localFile2.json", "--environment", "env.json", "--globals", "globals.json", "--reporters", "junit,html", "--reporter-junit-export", "target/newman/TEST-localFile2.xml", "--reporter-html-export", "target/newman/TEST-localFile2.html"}})
 	})
 
 	t.Run("error on newman execution", func(t *testing.T) {
@@ -228,6 +233,19 @@ func TestResolveTemplate(t *testing.T) {
 		cmd, err := resolveTemplate(&config, "theDisplayName")
 		assert.NoError(t, err)
 		assert.Equal(t, []string{"this", "is", "my", "fancy", "command", "theDisplayName"}, cmd)
+	})
+
+	t.Run("get environment variable", func(t *testing.T) {
+		t.Parallel()
+
+		temporaryEnvVarName := uuid.New().String()
+		os.Setenv(temporaryEnvVarName, "myEnvVar")
+		defer os.Unsetenv(temporaryEnvVarName)
+		config := newmanExecuteOptions{RunOptions: []string{"this", "is", "my", "fancy", "command", "with", "--env-var", "{{getenv \"" + temporaryEnvVarName + "\"}}"}}
+
+		cmd, err := resolveTemplate(&config, "collectionsDisplayName")
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"this", "is", "my", "fancy", "command", "with", "--env-var", "myEnvVar"}, cmd)
 	})
 
 	t.Run("error when parameter cannot be resolved", func(t *testing.T) {

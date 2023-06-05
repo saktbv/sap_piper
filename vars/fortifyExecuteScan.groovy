@@ -5,14 +5,14 @@ import groovy.transform.Field
 import static com.sap.piper.Prerequisites.checkScript
 
 @Field String STEP_NAME = getClass().getName()
-@Field String METADATA_FILE = 'metadata/fortify.yaml'
+@Field String METADATA_FILE = 'metadata/fortifyExecuteScan.yaml'
 
-//Metadata maintained in file project://resources/metadata/fortify.yaml
+//Metadata maintained in file project://resources/metadata/fortifyExecuteScan.yaml
 
 void call(Map parameters = [:]) {
     final script = checkScript(this, parameters) ?: this
     parameters = DownloadCacheUtils.injectDownloadCacheInParameters(script, parameters, BuildTool.MAVEN)
 
-    List credentials = [[type: 'token', id: 'fortifyCredentialsId', env: ['PIPER_authToken']]]
+    List credentials = [[type: 'token', id: 'fortifyCredentialsId', env: ['PIPER_authToken']], [type: 'token', id: 'githubTokenCredentialsId', env: ['PIPER_githubToken']]]
     piperExecuteBin(parameters, STEP_NAME, METADATA_FILE, credentials)
 }

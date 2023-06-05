@@ -6,7 +6,7 @@ metadata:
 
 #    The step is using `dockerExecute` step to spin up two containers in a Docker network:
 #    * a Selenium/Chrome container (`selenium/standalone-chrome`)
-#    * a NodeJS container (`node:lts-stretch`)
+#    * a NodeJS container (`node:lts-buster`)
 #    In the Docker network, the containers can be referenced by the values provided in `dockerName` and `sidecarName`, the default values are `uiVeri5` and `selenium`.
 #   !!! note
 #        In a Kubernetes environment, the containers both need to be referenced with `localhost`.
@@ -61,9 +61,20 @@ spec:
           - PARAMETERS
           - STAGES
           - STEPS
+  outputs:
+    resources:
+      - name: reports
+        type: reports
+        params:
+          - filePattern: "**/TEST-*.xml"
+            type: acceptance-test
+          - filePattern: "**/requirement.mapping"
+            type: requirement-mapping
+          - filePattern: "**/delivery.mapping"
+            type: delivery-mapping
   containers:
     - name: uiVeri5
-      image: node:lts-stretch
+      image: node:lts-buster
       env:
         - name: no_proxy
           value: localhost,selenium,$no_proxy

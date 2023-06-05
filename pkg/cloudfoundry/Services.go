@@ -40,6 +40,7 @@ func (cf *CFUtils) ReadServiceKey(options ServiceKeyOptions) (string, error) {
 
 	if err != nil {
 		// error while reading service key
+		log.SetErrorCategory(log.ErrorConfiguration)
 		return "", fmt.Errorf("Reading service key failed: %w", err)
 	}
 
@@ -58,7 +59,7 @@ func (cf *CFUtils) ReadServiceKey(options ServiceKeyOptions) (string, error) {
 	return serviceKeyJSON, err
 }
 
-//ServiceKeyOptions for reading CF Service Key
+// ServiceKeyOptions for reading CF Service Key
 type ServiceKeyOptions struct {
 	CfAPIEndpoint     string
 	CfOrg             string

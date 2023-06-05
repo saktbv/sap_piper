@@ -1,17 +1,21 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/SAP/jenkins-library/pkg/cloudfoundry"
 	"github.com/SAP/jenkins-library/pkg/command"
 	"github.com/SAP/jenkins-library/pkg/mock"
 	"github.com/SAP/jenkins-library/pkg/piperutils"
 	"github.com/SAP/jenkins-library/pkg/yaml"
 	"github.com/stretchr/testify/assert"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
 )
 
 type manifestMock struct {
@@ -61,7 +65,8 @@ func TestCfDeployment(t *testing.T) {
 
 	filesMock := mock.FilesMock{}
 	filesMock.AddDir("/home/me")
-	filesMock.Chdir("/home/me")
+	err := filesMock.Chdir("/home/me")
+	assert.NoError(t, err)
 	fileUtils = &filesMock
 
 	// everything below in the config map annotated with '//default' is a default in the metadata
@@ -116,7 +121,7 @@ func TestCfDeployment(t *testing.T) {
 		}
 
 		return func() {
-			filesMock.FileRemove(manifestName) // slightly mis-use since that is intended to be used by code under test, not test code
+			_ = filesMock.FileRemove(manifestName) // slightly mis-use since that is intended to be used by code under test, not test code
 			_getManifest = getManifest
 		}
 	}
@@ -290,7 +295,7 @@ func TestCfDeployment(t *testing.T) {
 		}()
 
 		_now = func() time.Time {
-			// There was the big eclise in Karlsruhe
+			// There was the big eclipse in Karlsruhe
 			return time.Date(1999, time.August, 11, 12, 32, 0, 0, time.UTC)
 		}
 
@@ -298,6 +303,7 @@ func TestCfDeployment(t *testing.T) {
 
 		config.DeployTool = "cf_native"
 		config.ArtifactVersion = "0.1.2"
+		config.CommitHash = "123456"
 
 		influxData := cloudFoundryDeployInflux{}
 
@@ -310,6 +316,7 @@ func TestCfDeployment(t *testing.T) {
 			expected.deployment_data.fields.artifactURL = "n/a"
 			expected.deployment_data.fields.deployTime = "AUG 11 1999 12:32:00"
 			expected.deployment_data.fields.jobTrigger = "n/a"
+			expected.deployment_data.fields.commitHash = "123456"
 
 			expected.deployment_data.tags.artifactVersion = "0.1.2"
 			expected.deployment_data.tags.deployUser = "me"
@@ -488,6 +495,41 @@ func TestCfDeployment(t *testing.T) {
 		}
 	})
 
+	t.Run("get app name from default manifest with cf native deployment", func(t *testing.T) {
+
+		defer cleanup()
+
+		config.DeployTool = "cf_native"
+		config.Manifest = ""
+		config.AppName = ""
+
+		//app name does not need to be set if it can be found in the manifest.yml
+		//manifest name does not need to be set- the default manifest.yml will be used if not set
+		defer prepareDefaultManifestMocking("manifest.yml", []string{"newAppName"})()
+
+		s := mock.ExecMockRunner{}
+
+		err := runCloudFoundryDeploy(&config, nil, nil, &s)
+
+		if assert.NoError(t, err) {
+
+			t.Run("check shell calls", func(t *testing.T) {
+
+				withLoginAndLogout(t, func(t *testing.T) {
+
+					assert.Equal(t, []mock.ExecCall{
+						{Exec: "cf", Params: []string{"version"}},
+						{Exec: "cf", Params: []string{"plugins"}},
+						{Exec: "cf", Params: []string{
+							"push",
+						}},
+					}, s.Calls)
+
+				})
+			})
+		}
+	})
+
 	t.Run("deploy cf native without app name", func(t *testing.T) {
 
 		defer cleanup()
@@ -586,7 +628,7 @@ func TestCfDeployment(t *testing.T) {
 		config.AppName = "myTestApp"
 
 		defer func() {
-			filesMock.FileRemove("test-manifest.yml")
+			_ = filesMock.FileRemove("test-manifest.yml")
 			_getManifest = getManifest
 		}()
 
@@ -750,7 +792,7 @@ func TestCfDeployment(t *testing.T) {
 		config.Manifest = "test-manifest.yml"
 
 		defer func() {
-			filesMock.FileRemove("test-manifest.yml")
+			_ = filesMock.FileRemove("test-manifest.yml")
 			_getManifest = getManifest
 		}()
 
@@ -791,7 +833,7 @@ func TestCfDeployment(t *testing.T) {
 		config.MtaPath = "target/test.mtar"
 
 		defer func() {
-			filesMock.FileRemove("target/test.mtar")
+			_ = filesMock.FileRemove("target/test.mtar")
 		}()
 
 		filesMock.AddFile("target/test.mtar", []byte("content does not matter"))
@@ -906,8 +948,8 @@ func TestCfDeployment(t *testing.T) {
 		config.AppName = "testAppName"
 
 		defer func() {
-			filesMock.FileRemove("test-manifest.yml")
-			filesMock.FileRemove("vars.yaml")
+			_ = filesMock.FileRemove("test-manifest.yml")
+			_ = filesMock.FileRemove("vars.yaml")
 			_getManifest = getManifest
 			_getVarsOptions = cloudfoundry.GetVarsOptions
 			_getVarsFileOptions = cloudfoundry.GetVarsFileOptions
@@ -990,7 +1032,7 @@ func TestCfDeployment(t *testing.T) {
 
 		t.Run("mta config file from project sources", func(t *testing.T) {
 
-			defer filesMock.FileRemove("xyz.mtar")
+			defer func() { _ = filesMock.FileRemove("xyz.mtar") }()
 
 			// The mock is inaccurat here.
 			// AddFile() adds the file absolute, prefix with the current working directory
@@ -1067,7 +1109,7 @@ func TestMtarLookup(t *testing.T) {
 
 	t.Run("One MTAR", func(t *testing.T) {
 
-		defer filesMock.FileRemove("x.mtar")
+		defer func() { _ = filesMock.FileRemove("x.mtar") }()
 		filesMock.AddFile("x.mtar", []byte("content does not matter"))
 
 		path, err := findMtar()
@@ -1090,8 +1132,8 @@ func TestMtarLookup(t *testing.T) {
 	t.Run("Several MTARs", func(t *testing.T) {
 
 		defer func() {
-			filesMock.FileRemove("x.mtar")
-			filesMock.FileRemove("y.mtar")
+			_ = filesMock.FileRemove("x.mtar")
+			_ = filesMock.FileRemove("y.mtar")
 		}()
 
 		filesMock.AddFile("x.mtar", []byte("content does not matter"))
@@ -1106,7 +1148,8 @@ func TestSmokeTestScriptHandling(t *testing.T) {
 
 	filesMock := mock.FilesMock{}
 	filesMock.AddDir("/home/me")
-	filesMock.Chdir("/home/me")
+	err := filesMock.Chdir("/home/me")
+	assert.NoError(t, err)
 	filesMock.AddFileWithMode("mySmokeTestScript.sh", []byte("Content does not matter"), 0644)
 	fileUtils = &filesMock
 
@@ -1172,12 +1215,13 @@ func TestDefaultManifestVariableFilesHandling(t *testing.T) {
 
 	filesMock := mock.FilesMock{}
 	filesMock.AddDir("/home/me")
-	filesMock.Chdir("/home/me")
+	err := filesMock.Chdir("/home/me")
+	assert.NoError(t, err)
 	fileUtils = &filesMock
 
 	t.Run("default manifest variable file is the only one and exists", func(t *testing.T) {
 		defer func() {
-			filesMock.FileRemove("manifest-variables.yml")
+			_ = filesMock.FileRemove("manifest-variables.yml")
 		}()
 		filesMock.AddFile("manifest-variables.yml", []byte("Content does not matter"))
 
@@ -1235,9 +1279,7 @@ func TestExtensionDescriptorsWithMinusE(t *testing.T) {
 		extDesc, _ := handleMtaExtensionDescriptors("-e 1.yaml -e 2.yaml")
 		assert.Equal(t, []string{
 			"-e",
-			"1.yaml",
-			"-e",
-			"2.yaml",
+			"1.yaml,2.yaml",
 		}, extDesc)
 	})
 
@@ -1245,9 +1287,7 @@ func TestExtensionDescriptorsWithMinusE(t *testing.T) {
 		extDesc, _ := handleMtaExtensionDescriptors("1.yaml -e 2.yaml")
 		assert.Equal(t, []string{
 			"-e",
-			"1.yaml",
-			"-e",
-			"2.yaml",
+			"1.yaml,2.yaml",
 		}, extDesc)
 	})
 
@@ -1296,25 +1336,16 @@ func TestAppNameChecks(t *testing.T) {
 
 func TestMtaExtensionCredentials(t *testing.T) {
 
-	content := []byte(`'_schema-version: '3.1'
-	ID: test.ext
-	extends: test
-	parameters
-		test-credentials1: "<%= testCred1 %>"
-		test-credentials2: "<%= testCred2 %>"`)
-
 	filesMock := mock.FilesMock{}
 	filesMock.AddDir("/home/me")
-	filesMock.Chdir("/home/me")
-	filesMock.AddFile("mtaext1.mtaext", content)
-	filesMock.AddFile("mtaext2.mtaext", content)
-	filesMock.AddFile("mtaext3.mtaext", content)
+	err := filesMock.Chdir("/home/me")
+	assert.NoError(t, err)
 	fileUtils = &filesMock
 
 	_environ = func() []string {
 		return []string{
-			"MY_CRED_ENV_VAR1=******",
-			"MY_CRED_ENV_VAR2=++++++",
+			"MY_CRED_ENV_VAR1=**$0****",
+			"MY_CRED_ENV_VAR2=++$1++++",
 		}
 	}
 
@@ -1324,26 +1355,40 @@ func TestMtaExtensionCredentials(t *testing.T) {
 	}()
 
 	t.Run("extension file does not exist", func(t *testing.T) {
-		err := handleMtaExtensionCredentials("mtaextDoesNotExist.mtaext", map[string]interface{}{})
+		_, _, err := handleMtaExtensionCredentials("mtaextDoesNotExist.mtaext", map[string]interface{}{})
 		assert.EqualError(t, err, "Cannot handle credentials for mta extension file 'mtaextDoesNotExist.mtaext': could not read 'mtaextDoesNotExist.mtaext'")
 	})
 
 	t.Run("credential cannot be retrieved", func(t *testing.T) {
 
-		err := handleMtaExtensionCredentials(
-			"mtaext1.mtaext",
+		filesMock.AddFile("mtaext.mtaext", []byte(
+			`'_schema-version: '3.1'
+				ID: test.ext
+				extends: test
+				parameters
+					test-credentials1: "<%= testCred1 %>"
+					test-credentials2: "<%=testCred2%>"`))
+		_, _, err := handleMtaExtensionCredentials(
+			"mtaext.mtaext",
 			map[string]interface{}{
 				"testCred1": "myCredEnvVar1NotDefined",
 				"testCred2": "myCredEnvVar2NotDefined",
 			},
 		)
-		assert.EqualError(t, err, "Cannot handle mta extension credentials: No credentials found for '[myCredEnvVar1NotDefined myCredEnvVar2NotDefined]'/'[MY_CRED_ENV_VAR1_NOT_DEFINED MY_CRED_ENV_VAR2_NOT_DEFINED]'. Are these credentials maintained?")
+		assert.EqualError(t, err, "cannot handle mta extension credentials: No credentials found for '[myCredEnvVar1NotDefined myCredEnvVar2NotDefined]'/'[MY_CRED_ENV_VAR1_NOT_DEFINED MY_CRED_ENV_VAR2_NOT_DEFINED]'. Are these credentials maintained?")
 	})
 
-	t.Run("irrelevant credentials does not cause failures", func(t *testing.T) {
+	t.Run("irrelevant credentials do not cause failures", func(t *testing.T) {
 
-		err := handleMtaExtensionCredentials(
-			"mtaext2.mtaext",
+		filesMock.AddFile("mtaext.mtaext", []byte(
+			`'_schema-version: '3.1'
+				ID: test.ext
+				extends: test
+				parameters
+					test-credentials1: "<%= testCred1 %>"
+					test-credentials2: "<%=testCred2%>`))
+		_, _, err := handleMtaExtensionCredentials(
+			"mtaext.mtaext",
 			map[string]interface{}{
 				"testCred1":       "myCredEnvVar1",
 				"testCred2":       "myCredEnvVar2",
@@ -1353,9 +1398,44 @@ func TestMtaExtensionCredentials(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	t.Run("invalid chars in credential key name", func(t *testing.T) {
+		filesMock.AddFile("mtaext.mtaext", []byte(
+			`'_schema-version: '3.1'
+				ID: test.ext
+				extends: test
+				parameters
+					test-credentials1: "<%= testCred1 %>"
+					test-credentials2: "<%=testCred2%>`))
+		_, _, err := handleMtaExtensionCredentials("mtaext.mtaext",
+			map[string]interface{}{
+				"test.*Cred1": "myCredEnvVar1",
+			},
+		)
+		assert.EqualError(t, err, "credential key name 'test.*Cred1' contains unsupported character. Must contain only ^[-_A-Za-z0-9]+$")
+	})
+
+	t.Run("unresolved placeholders does not cause an error", func(t *testing.T) {
+		// we emit a log message, but it does not fail
+		filesMock.AddFile("mtaext-unresolved.mtaext", []byte("<%= unresolved %>"))
+		updated, containsUnresolved, err := handleMtaExtensionCredentials("mtaext-unresolved.mtaext", map[string]interface{}{})
+		assert.True(t, containsUnresolved)
+		assert.False(t, updated)
+		assert.NoError(t, err)
+	})
+
 	t.Run("replace straight forward", func(t *testing.T) {
-		mtaFileName := "mtaext3.mtaext"
-		err := handleMtaExtensionCredentials(
+		mtaFileName := "mtaext.mtaext"
+		filesMock.AddFile(mtaFileName, []byte(
+			`'_schema-version: '3.1'
+			ID: test.ext
+			extends: test
+			parameters
+				test-credentials1: "<%= testCred1 %>"
+				test-credentials2: "<%=testCred2%>"
+				test-credentials3: "<%= testCred2%>"
+				test-credentials4: "<%=testCred2 %>"
+				test-credentials5: "<%=  testCred2    %>"`))
+		updated, containsUnresolved, err := handleMtaExtensionCredentials(
 			mtaFileName,
 			map[string]interface{}{
 				"testCred1": "myCredEnvVar1",
@@ -1368,13 +1448,19 @@ func TestMtaExtensionCredentials(t *testing.T) {
 				assert.Fail(t, "Cannot read mta extension file: %v", e)
 			}
 			content := string(b)
-			assert.Contains(t, content, "test-credentials1: \"******\"")
-			assert.Contains(t, content, "test-credentials2: \"++++++\"")
+			assert.Contains(t, content, "test-credentials1: \"**$0****\"")
+			assert.Contains(t, content, "test-credentials2: \"++$1++++\"")
+			assert.Contains(t, content, "test-credentials3: \"++$1++++\"")
+			assert.Contains(t, content, "test-credentials4: \"++$1++++\"")
+			assert.Contains(t, content, "test-credentials5: \"++$1++++\"")
+
+			assert.True(t, updated)
+			assert.False(t, containsUnresolved)
 		}
 	})
 }
 
 func TestEnvVarKeyModification(t *testing.T) {
-	envVarCompatibleKey := toEnvVarKey("Mta.ExtensionCredential~Credential_Id1")
-	assert.Equal(t, "MTA_EXTENSION_CREDENTIAL_CREDENTIAL_ID1", envVarCompatibleKey)
+	envVarCompatibleKey := toEnvVarKey("Mta.EXtensionCredential~Credential_Id1Abc")
+	assert.Equal(t, "MTA_EXTENSION_CREDENTIAL_CREDENTIAL_ID1_ABC", envVarCompatibleKey)
 }

@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package main
 
 import (
@@ -18,9 +21,7 @@ func TestCommandContract(t *testing.T) {
 // Test provided by consumer: SAP InnerSource project
 // Changes to the test require peer review by core-team members involved in the project.
 func TestGenerator(t *testing.T) {
-	dir, err := ioutil.TempDir("", "")
-	defer os.RemoveAll(dir) // clean up
-	assert.NoError(t, err, "Error when creating temp dir")
+	dir := t.TempDir()
 
 	metadata := `metadata:
   name: test

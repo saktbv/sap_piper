@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
@@ -6,7 +9,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/google/go-github/v32/github"
+	"github.com/google/go-github/v45/github"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -107,7 +110,6 @@ func TestRunGithubCreatePullRequest(t *testing.T) {
 
 		err := runGithubCreatePullRequest(ctx, &myGithubPROptions, &ghPRService, &ghIssueService)
 		assert.EqualError(t, err, "Error occurred when creating pull request: Authentication failed", "Wrong error returned")
-
 	})
 
 	t.Run("Edit error", func(t *testing.T) {

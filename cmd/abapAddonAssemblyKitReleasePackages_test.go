@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package cmd
 
 import (
@@ -5,22 +8,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SAP/jenkins-library/pkg/abap/aakaas"
 	"github.com/SAP/jenkins-library/pkg/abaputils"
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestReleasePackagesStep(t *testing.T) {
 	var config abapAddonAssemblyKitReleasePackagesOptions
 	var cpe abapAddonAssemblyKitReleasePackagesCommonPipelineEnvironment
-	client := &abaputils.ClientMock{
-		Body:       responseRelease,
-		Token:      "myToken",
-		StatusCode: 200,
-	}
-	timeout := time.Duration(5 * time.Second)
-	pollInterval := time.Duration(1 * time.Second)
+	bundle := aakaas.NewAakBundleMock()
+	bundle.SetBody(responseRelease)
+	utils := bundle.GetUtils()
+
+	config.Username = "dummyUser"
+	config.Password = "dummyPassword"
 	t.Run("step success", func(t *testing.T) {
+		//arrange
 		addonDescriptor := abaputils.AddonDescriptor{
 			Repositories: []abaputils.Repository{
 				{
@@ -35,16 +38,18 @@ func TestReleasePackagesStep(t *testing.T) {
 		}
 		adoDesc, _ := json.Marshal(addonDescriptor)
 		config.AddonDescriptor = string(adoDesc)
-
-		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, client, &cpe, timeout, pollInterval)
-
+		//act
+		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, &utils, &cpe)
+		//assert
 		assert.NoError(t, err, "Did not expect error")
 		var addonDescriptorFinal abaputils.AddonDescriptor
-		json.Unmarshal([]byte(cpe.abap.addonDescriptor), &addonDescriptorFinal)
+		err = json.Unmarshal([]byte(cpe.abap.addonDescriptor), &addonDescriptorFinal)
+		assert.NoError(t, err)
 		assert.Equal(t, "R", addonDescriptorFinal.Repositories[0].Status)
 	})
 
 	t.Run("step error - invalid input", func(t *testing.T) {
+		//arrange
 		addonDescriptor := abaputils.AddonDescriptor{
 			Repositories: []abaputils.Repository{
 				{
@@ -54,14 +59,17 @@ func TestReleasePackagesStep(t *testing.T) {
 		}
 		adoDesc, _ := json.Marshal(addonDescriptor)
 		config.AddonDescriptor = string(adoDesc)
-
-		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, client, &cpe, timeout, pollInterval)
+		//act
+		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, &utils, &cpe)
+		//assert
 		assert.Error(t, err, "Did expect error")
 		assert.Equal(t, err.Error(), "Parameter missing. Please provide the name of the package which should be released")
 	})
 
-	t.Run("step error - timeout", func(t *testing.T) {
-		client.Error = errors.New("Release not finished")
+	t.Run("step error - timeout single", func(t *testing.T) {
+		//arrange
+		bundle.SetError("Release not finished")
+		bundle.SetMaxRuntime(1 * time.Microsecond)
 		addonDescriptor := abaputils.AddonDescriptor{
 			Repositories: []abaputils.Repository{
 				{
@@ -72,11 +80,50 @@ func TestReleasePackagesStep(t *testing.T) {
 		}
 		adoDesc, _ := json.Marshal(addonDescriptor)
 		config.AddonDescriptor = string(adoDesc)
-
-		timeout := time.Duration(2 * time.Second)
-		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, client, &cpe, timeout, pollInterval)
+		//act
+		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, &utils, &cpe)
+		//assert
 		assert.Error(t, err, "Did expect error")
-		assert.Equal(t, err.Error(), "Timed out")
+		assert.Equal(t, err.Error(), "Release of all packages failed/timed out - Aborting as abapEnvironmentAssembleConfirm step is not needed: Timed out")
+	})
+}
+func TestReleasePackagesStepMix(t *testing.T) {
+	var config abapAddonAssemblyKitReleasePackagesOptions
+	var cpe abapAddonAssemblyKitReleasePackagesCommonPipelineEnvironment
+	bundle := aakaas.NewAakBundleMock()
+	bundle.SetBody(responseRelease)
+	utils := bundle.GetUtils()
+
+	config.Username = "dummyUser"
+	config.Password = "dummyPassword"
+	t.Run("step error - timeout mix", func(t *testing.T) {
+		//arrange
+		bundle.SetBodyList([]string{responseRelease, responseRelease}) //Head + Post
+		bundle.SetMaxRuntime(500 * time.Microsecond)
+		bundle.SetErrorInsteadOfDumpToTrue()
+		addonDescriptor := abaputils.AddonDescriptor{
+			Repositories: []abaputils.Repository{
+				{
+					PackageName: "SAPK-002AAINDRNMSPC",
+					Status:      "L",
+				},
+				{
+					PackageName: "SAPK-001AAINDRNMSPC",
+					Status:      "L",
+				},
+			},
+		}
+		adoDesc, _ := json.Marshal(addonDescriptor)
+		config.AddonDescriptor = string(adoDesc)
+		//act
+		err := runAbapAddonAssemblyKitReleasePackages(&config, nil, &utils, &cpe)
+		//assert
+		assert.NoError(t, err, "Did not expect error")
+		var addonDescriptorFinal abaputils.AddonDescriptor
+		err = json.Unmarshal([]byte(cpe.abap.addonDescriptor), &addonDescriptorFinal)
+		assert.NoError(t, err)
+		assert.Equal(t, "R", addonDescriptorFinal.Repositories[0].Status)
+		assert.Equal(t, "L", addonDescriptorFinal.Repositories[1].Status)
 	})
 }
 

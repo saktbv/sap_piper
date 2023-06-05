@@ -1,51 +1,46 @@
 package cmd
 
 import (
-	"encoding/json"
-	"net/url"
-
+	"github.com/SAP/jenkins-library/pkg/abap/aakaas"
 	abapbuild "github.com/SAP/jenkins-library/pkg/abap/build"
 	"github.com/SAP/jenkins-library/pkg/abaputils"
-	"github.com/SAP/jenkins-library/pkg/command"
-	piperhttp "github.com/SAP/jenkins-library/pkg/http"
 	"github.com/SAP/jenkins-library/pkg/log"
+	"github.com/SAP/jenkins-library/pkg/piperutils"
 	"github.com/SAP/jenkins-library/pkg/telemetry"
 )
 
 func abapAddonAssemblyKitCheckPV(config abapAddonAssemblyKitCheckPVOptions, telemetryData *telemetry.CustomData, cpe *abapAddonAssemblyKitCheckPVCommonPipelineEnvironment) {
-	// for command execution use Command
-	c := command.Command{}
-	// reroute command output to logging framework
-	c.Stdout(log.Writer())
-	c.Stderr(log.Writer())
-
-	client := piperhttp.Client{}
-
+	utils := aakaas.NewAakBundle()
 	// error situations should stop execution through log.Entry().Fatal() call which leads to an os.Exit(1) in the end
-	err := runAbapAddonAssemblyKitCheckPV(&config, telemetryData, &client, cpe, abaputils.ReadAddonDescriptor)
-	if err != nil {
+	if err := runAbapAddonAssemblyKitCheckPV(&config, telemetryData, utils, cpe); err != nil {
 		log.Entry().WithError(err).Fatal("step execution failed")
 	}
 }
+func runAbapAddonAssemblyKitCheckPV(config *abapAddonAssemblyKitCheckPVOptions, telemetryData *telemetry.CustomData, utils aakaas.AakUtils, cpe *abapAddonAssemblyKitCheckPVCommonPipelineEnvironment) error {
 
-func runAbapAddonAssemblyKitCheckPV(config *abapAddonAssemblyKitCheckPVOptions, telemetryData *telemetry.CustomData, client piperhttp.Sender,
-	cpe *abapAddonAssemblyKitCheckPVCommonPipelineEnvironment, readAdoDescriptor abaputils.ReadAddonDescriptorType) error {
+	log.Entry().Info("╔═════════════════════════════╗")
+	log.Entry().Info("║ abapAddonAssemblyKitCheckPV ║")
+	log.Entry().Info("╚═════════════════════════════╝")
 
 	conn := new(abapbuild.Connector)
-	conn.InitAAKaaS(config.AbapAddonAssemblyKitEndpoint, config.Username, config.Password, client)
+	if err := conn.InitAAKaaS(config.AbapAddonAssemblyKitEndpoint, config.Username, config.Password, utils); err != nil {
+		return err
+	}
 
 	log.Entry().Infof("Reading Product Version Information from addonDescriptor (aka addon.yml) file: %s", config.AddonDescriptorFileName)
-	addonDescriptor, err := readAdoDescriptor(config.AddonDescriptorFileName)
+	addonDescriptor, err := utils.ReadAddonDescriptor(config.AddonDescriptorFileName)
 	if err != nil {
 		return err
 	}
 
-	pv := new(productVersion).init(addonDescriptor, *conn)
-	err = pv.validateAndResolveVersionFields()
-	if err != nil {
+	pv := new(aakaas.ProductVersion)
+	if err := pv.ConstructProductversion(addonDescriptor, *conn); err != nil {
 		return err
 	}
-	pv.transferVersionFields(&addonDescriptor)
+	if err = pv.ValidateAndResolveVersionFields(); err != nil {
+		return err
+	}
+	pv.CopyVersionFieldsToDescriptor(&addonDescriptor)
 
 	// now Product Version fields are valid, but maybe Component Versions (Repositories) were checked before, so copy that part from CPE
 	// we don't care for errors
@@ -61,50 +56,13 @@ func runAbapAddonAssemblyKitCheckPV(config *abapAddonAssemblyKitCheckPVOptions, 
 	cpe.abap.addonDescriptor = string(addonDescriptor.AsJSON())
 	log.Entry().Info("Wrote addonDescriptor to CommonPipelineEnvironment")
 
-	return nil
-}
-
-func (p *productVersion) init(desc abaputils.AddonDescriptor, conn abapbuild.Connector) *productVersion {
-	p.Connector = conn
-	p.Name = desc.AddonProduct
-	p.VersionYAML = desc.AddonVersionYAML
-
-	return p
-}
-
-func (p *productVersion) transferVersionFields(initialAddonDescriptor *abaputils.AddonDescriptor) {
-	initialAddonDescriptor.AddonVersion = p.Version
-	initialAddonDescriptor.AddonSpsLevel = p.SpsLevel
-	initialAddonDescriptor.AddonPatchLevel = p.PatchLevel
-}
-
-func (p *productVersion) validateAndResolveVersionFields() error {
-	log.Entry().Infof("Validate product '%s' version '%s' and resolve version", p.Name, p.VersionYAML)
-	appendum := "/odata/aas_ocs_package/ValidateProductVersion?Name='" + url.QueryEscape(p.Name) + "'&Version='" + url.QueryEscape(p.VersionYAML) + "'"
-	body, err := p.Connector.Get(appendum)
-	if err != nil {
-		return err
+	var filesToPublish []piperutils.Path
+	log.Entry().Infof("Add %s to be published", config.AddonDescriptorFileName)
+	filesToPublish = append(filesToPublish, piperutils.Path{Target: config.AddonDescriptorFileName, Name: "AddonDescriptor", Mandatory: true})
+	log.Entry().Infof("Publishing %v files", len(filesToPublish))
+	if err := piperutils.PersistReportsAndLinks("abapAddonAssemblyKitCheckPV", "", utils, filesToPublish, nil); err != nil {
+		log.Entry().WithError(err).Error("failed to persist report information")
 	}
-	var jPV jsonProductVersion
-	json.Unmarshal(body, &jPV)
-	p.Name = jPV.ProductVersion.Name
-	p.Version = jPV.ProductVersion.Version
-	p.SpsLevel = jPV.ProductVersion.SpsLevel
-	p.PatchLevel = jPV.ProductVersion.PatchLevel
-	log.Entry().Infof("Resolved version %s, spslevel %s, patchlevel %s", p.Version, p.SpsLevel, p.PatchLevel)
+
 	return nil
-}
-
-type jsonProductVersion struct {
-	ProductVersion *productVersion `json:"d"`
-}
-
-type productVersion struct {
-	abapbuild.Connector
-	Name           string `json:"Name"`
-	VersionYAML    string
-	Version        string `json:"Version"`
-	SpsLevel       string `json:"SpsLevel"`
-	PatchLevel     string `json:"PatchLevel"`
-	TargetVectorID string
 }

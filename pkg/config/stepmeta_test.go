@@ -1,3 +1,6 @@
+//go:build unit
+// +build unit
+
 package config
 
 import (
@@ -291,7 +294,7 @@ func TestGetContextParameterFilters(t *testing.T) {
 
 	t.Run("Containers", func(t *testing.T) {
 		filters := metadata2.GetContextParameterFilters()
-		params := defaultParams("containerCommand", "containerShell", "dockerEnvVars", "dockerImage", "dockerName", "dockerOptions", "dockerPullImage", "dockerVolumeBind", "dockerWorkspace", "pip", "scanType")
+		params := defaultParams("containerCommand", "containerShell", "dockerEnvVars", "dockerImage", "dockerName", "dockerOptions", "dockerPullImage", "dockerVolumeBind", "dockerWorkspace", "dockerRegistryUrl", "dockerRegistryCredentialsId", "pip", "scanType")
 
 		assert.Equal(t, params, filters.All, "incorrect filter All")
 		assert.Equal(t, params, filters.General, "incorrect filter General")
@@ -538,6 +541,28 @@ func TestGetContextDefaults(t *testing.T) {
 		assert.Equal(t, nil, d.Defaults[0].Steps["testStep"]["sidecarPullImage"], "sidecarPullImage default not available")
 	})
 
+	t.Run("Empty docker parameter values", func(t *testing.T) {
+		metadata := StepData{
+			Spec: StepSpec{
+				Containers: []Container{
+					{
+						Image:   "testImage1:tag",
+						Options: []Option{{Name: "entrypoint", Value: ""}},
+					},
+				},
+			},
+		}
+
+		cd, err := metadata.GetContextDefaults("testStep")
+
+		assert.NoError(t, err)
+
+		var d PipelineDefaults
+		d.ReadPipelineDefaults([]io.ReadCloser{cd})
+
+		assert.Equal(t, []interface{}{"entrypoint="}, d.Defaults[0].Steps["testStep"]["dockerOptions"])
+	})
+
 	t.Run("Negative case", func(t *testing.T) {
 		metadataErr := []StepData{
 			{},
@@ -628,17 +653,26 @@ func TestGetResourceParameters(t *testing.T) {
 				}}}},
 			expected: map[string]interface{}{"param4": "{\"key\":\"valueString\"}"},
 		},
+		{
+			in: StepData{
+				Spec: StepSpec{Inputs: StepInputs{Parameters: []StepParameters{
+					{Name: "param1", ResourceRef: []ResourceReference{{Name: "commonPipelineEnvironment", Param: "envparam1"}, {Name: "commonPipelineEnvironment", Param: "envparam2"}}, Type: "string"},
+				}}}},
+			expected: map[string]interface{}{"param1": "val1"},
+		},
+		{
+			in: StepData{
+				Spec: StepSpec{Inputs: StepInputs{Parameters: []StepParameters{
+					{Name: "param1", ResourceRef: []ResourceReference{{Name: "commonPipelineEnvironment", Param: "sthwhichclearlydoesntexist"}, {Name: "commonPipelineEnvironment", Param: "envparam2"}}, Type: "string"},
+				}}}},
+			expected: map[string]interface{}{"param1": "val2"},
+		},
 	}
 
-	dir, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Fatal("Failed to create temporary directory")
-	}
-	// clean up tmp dir
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	cpeDir := filepath.Join(dir, "commonPipelineEnvironment")
-	err = os.MkdirAll(cpeDir, 0700)
+	err := os.MkdirAll(cpeDir, 0700)
 	if err != nil {
 		t.Fatal("Failed to create sub directory")
 	}
@@ -700,6 +734,22 @@ func TestAvoidEmptyFields(t *testing.T) {
 	})
 }
 
+func TestOptionsAsStringSlice(t *testing.T) {
+	tt := []struct {
+		options  []Option
+		expected []string
+	}{
+		{options: []Option{}, expected: []string{}},
+		{options: []Option{{Name: "name1", Value: "value1"}}, expected: []string{"name1 value1"}},
+		{options: []Option{{Name: "name1", Value: "value1"}, {Name: "name2", Value: "value2"}}, expected: []string{"name1 value1", "name2 value2"}},
+		{options: []Option{{Name: "empty", Value: ""}}, expected: []string{"empty="}},
+	}
+
+	for _, test := range tt {
+		assert.Equal(t, test.expected, OptionsAsStringSlice(test.options))
+	}
+}
+
 func defaultParams(params ...string) []string {
 	vaultParams := []string{
 		"vaultAppRoleTokenCredentialsId",
@@ -712,4 +762,36 @@ func defaultParams(params ...string) []string {
 	stepParams = append(stepParams, vaultParams...)
 
 	return stepParams
+}
+
+func testMetadataResolver() map[string]StepData {
+	return map[string]StepData{
+		"githubCreateIssue": {
+			Metadata: StepMetadata{
+				Name: "githubCreateIssue",
+			},
+		},
+	}
+}
+
+func TestResolveMetadata(t *testing.T) {
+
+	t.Run("Succes - stepName", func(t *testing.T) {
+		stepName := "githubCreateIssue"
+		stepData, err := ResolveMetadata(map[string]string{}, testMetadataResolver, "", stepName)
+		assert.NoError(t, err)
+		assert.Equal(t, "githubCreateIssue", stepData.Metadata.Name)
+	})
+
+	t.Run("Error - wrong stepName", func(t *testing.T) {
+		stepName := "notExisting"
+		_, err := ResolveMetadata(map[string]string{}, testMetadataResolver, "", stepName)
+		assert.EqualError(t, err, "could not retrieve by stepName notExisting")
+	})
+
+	t.Run("Error - missing input", func(t *testing.T) {
+		stepName := ""
+		_, err := ResolveMetadata(map[string]string{}, testMetadataResolver, "", stepName)
+		assert.EqualError(t, err, "either one of stepMetadata or stepName parameter has to be passed")
+	})
 }

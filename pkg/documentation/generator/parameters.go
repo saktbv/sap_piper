@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -15,8 +16,12 @@ func createParametersSection(stepData *config.StepData) string {
 
 	// sort parameters alphabetically with mandatory parameters first
 	sortStepParameters(stepData, true)
-	parameters += "### Overview\n\n"
-	parameters += createParameterOverview(stepData)
+	parameters += "### Overview - Step\n\n"
+	parameters += createParameterOverview(stepData, false)
+
+	parameters += "### Overview - Execution Environment\n\n"
+	parameters += "!!! note \"Orchestrator-specific only\"\n\n    These parameters are relevant for orchestrator usage and not considered when using the command line option.\n\n"
+	parameters += createParameterOverview(stepData, true)
 
 	// sort parameters alphabetically
 	sortStepParameters(stepData, false)
@@ -26,12 +31,44 @@ func createParametersSection(stepData *config.StepData) string {
 	return parameters
 }
 
-func createParameterOverview(stepData *config.StepData) string {
+func parameterMandatoryInformation(param config.StepParameters, furtherInfo string) (mandatory bool, mandatoryString string, mandatoryInfo string) {
+	mandatory = param.Mandatory
+	mandatoryInfo = furtherInfo
+
+	mandatoryIf := param.MandatoryIf
+	if len(mandatoryIf) > 0 {
+		mandatory = true
+		if len(mandatoryInfo) > 0 {
+			mandatoryInfo += "<br />"
+		}
+		furtherInfoConditions := []string{"mandatory in case of:"}
+		for _, mandatoryCondition := range mandatoryIf {
+			furtherInfoConditions = append(furtherInfoConditions, fmt.Sprintf("- [`%v`](#%v)=`%v`", mandatoryCondition.Name, strings.ToLower(mandatoryCondition.Name), mandatoryCondition.Value))
+		}
+
+		mandatoryInfo += strings.Join(furtherInfoConditions, "<br />")
+	}
+
+	mandatoryString = "**yes**"
+	if len(mandatoryInfo) > 0 {
+		mandatoryString = "**(yes)**"
+	}
+	return
+}
+
+func createParameterOverview(stepData *config.StepData, executionEnvironment bool) string {
 	var table = "| Name | Mandatory | Additional information |\n"
 	table += "| ---- | --------- | ---------------------- |\n"
 
 	for _, param := range stepData.Spec.Inputs.Parameters {
-		table += fmt.Sprintf("| [%v](#%v) | %v | %v |\n", param.Name, strings.ToLower(param.Name), ifThenElse(param.Mandatory, "**yes**", "no"), parameterFurtherInfo(param.Name, stepData))
+		furtherInfo, err := parameterFurtherInfo(param.Name, stepData, executionEnvironment)
+		if err == nil {
+
+			var mandatory bool
+			var mandatoryString string
+			mandatory, mandatoryString, furtherInfo = parameterMandatoryInformation(param, furtherInfo)
+			table += fmt.Sprintf("| [%v](#%v) | %v | %v |\n", param.Name, strings.ToLower(param.Name), ifThenElse(mandatory, mandatoryString, "no"), furtherInfo)
+		}
 	}
 
 	table += "\n"
@@ -39,34 +76,42 @@ func createParameterOverview(stepData *config.StepData) string {
 	return table
 }
 
-func parameterFurtherInfo(paramName string, stepData *config.StepData) string {
+func parameterFurtherInfo(paramName string, stepData *config.StepData, executionEnvironment bool) (string, error) {
 
 	// handle general parameters
 	// ToDo: add special handling once we have more than one general parameter to consider
 	if paramName == "verbose" {
-		return "activates debug output"
+		return checkParameterInfo("activates debug output", true, executionEnvironment)
 	}
 
 	if paramName == "script" {
-		return "[![Jenkins only](https://img.shields.io/badge/-Jenkins%20only-yellowgreen)](#) reference to Jenkins main pipeline script"
+		return checkParameterInfo("[![Jenkins only](https://img.shields.io/badge/-Jenkins%20only-yellowgreen)](#) reference to Jenkins main pipeline script", true, executionEnvironment)
 	}
 
-	// handle Jenkins-specific parameters
+	// handle non-step parameters (e.g. Jenkins-specific parameters as well as execution environment parameters)
+	jenkinsParams := []string{"containerCommand", "containerName", "containerShell", "dockerVolumeBind", "dockerWorkspace", "sidecarReadyCommand", "sidecarWorkspace", "stashContent"}
 	if !contains(stepParameterNames, paramName) {
 		for _, secret := range stepData.Spec.Inputs.Secrets {
 			if paramName == secret.Name && secret.Type == "jenkins" {
-				return "[![Jenkins only](https://img.shields.io/badge/-Jenkins%20only-yellowgreen)](#) id of credentials ([using credentials](https://www.jenkins.io/doc/book/using/using-credentials/))"
+				return checkParameterInfo("[![Jenkins only](https://img.shields.io/badge/-Jenkins%20only-yellowgreen)](#) id of credentials ([using credentials](https://www.jenkins.io/doc/book/using/using-credentials/))", true, executionEnvironment)
 			}
 		}
-		return "[![Jenkins only](https://img.shields.io/badge/-Jenkins%20only-yellowgreen)](#)"
+		if contains(jenkinsParams, paramName) {
+			return checkParameterInfo("[![Jenkins only](https://img.shields.io/badge/-Jenkins%20only-yellowgreen)](#)", false, executionEnvironment)
+		}
+		return checkParameterInfo("", false, executionEnvironment)
 	}
 
-	// handle Secrets
+	// handle step-parameters (incl. secrets)
 	for _, param := range stepData.Spec.Inputs.Parameters {
 		if paramName == param.Name {
+			furtherInfo := ""
+			if param.DeprecationMessage != "" {
+				furtherInfo += "![deprecated](https://img.shields.io/badge/-deprecated-red)"
+			}
 			if param.Secret {
 				secretInfo := "[![Secret](https://img.shields.io/badge/-Secret-yellowgreen)](#) pass via ENV or Jenkins credentials"
-				if param.GetReference("vaultSecret") != nil {
+				if param.GetReference("vaultSecret") != nil || param.GetReference("vaultSecretFile") != nil {
 					secretInfo = " [![Vault](https://img.shields.io/badge/-Vault-lightgrey)](#) [![Secret](https://img.shields.io/badge/-Secret-yellowgreen)](/) pass via ENV, Vault or Jenkins credentials"
 
 				}
@@ -75,12 +120,23 @@ func parameterFurtherInfo(paramName string, stepData *config.StepData) string {
 						secretInfo += fmt.Sprintf(" ([`%v`](#%v))", res.Name, strings.ToLower(res.Name))
 					}
 				}
-				return secretInfo
+				return checkParameterInfo(furtherInfo+secretInfo, true, executionEnvironment)
 			}
-			return ""
+			return checkParameterInfo(furtherInfo, true, executionEnvironment)
 		}
 	}
-	return ""
+	return checkParameterInfo("", true, executionEnvironment)
+}
+
+func checkParameterInfo(furtherInfo string, stepParam bool, executionEnvironment bool) (string, error) {
+	if stepParam && !executionEnvironment || !stepParam && executionEnvironment {
+		return furtherInfo, nil
+	}
+
+	if executionEnvironment {
+		return "", fmt.Errorf("step parameter not relevant as execution environment parameter")
+	}
+	return "", fmt.Errorf("execution environment parameter not relevant as step parameter")
 }
 
 func createParameterDetails(stepData *config.StepData) string {
@@ -107,9 +163,16 @@ func createParameterDetails(stepData *config.StepData) string {
 		details += "| Scope | Details |\n"
 		details += "| ---- | --------- |\n"
 
+		if param.DeprecationMessage != "" {
+			details += fmt.Sprintf("| Deprecated | %v |\n", param.DeprecationMessage)
+		}
 		details += fmt.Sprintf("| Aliases | %v |\n", aliasList(param.Aliases))
 		details += fmt.Sprintf("| Type | `%v` |\n", param.Type)
-		details += fmt.Sprintf("| Mandatory | %v |\n", ifThenElse(param.Mandatory, "**yes**", "no"))
+		mandatory, mandatoryString, furtherInfo := parameterMandatoryInformation(param, "")
+		if mandatory && len(furtherInfo) > 0 {
+			mandatoryString = furtherInfo
+		}
+		details += fmt.Sprintf("| Mandatory | %v |\n", ifThenElse(mandatory, mandatoryString, "no"))
 		details += fmt.Sprintf("| Default | %v |\n", formatDefault(param, stepParameterNames))
 		if param.PossibleValues != nil {
 			details += fmt.Sprintf("| Possible values | %v |\n", possibleValueList(param.PossibleValues))
@@ -158,7 +221,12 @@ func formatDefault(param config.StepParameters, stepParameterNames []string) str
 		defaults := []string{}
 		for _, condDef := range v {
 			//ToDo: add type-specific handling of default
-			defaults = append(defaults, fmt.Sprintf("%v=`%v`: `%v`", condDef.key, condDef.value, condDef.def))
+			if len(condDef.key) > 0 && len(condDef.value) > 0 {
+				defaults = append(defaults, fmt.Sprintf("%v=`%v`: `%v`", condDef.key, condDef.value, condDef.def))
+			} else {
+				// containers with no condition will only hold def
+				defaults = append(defaults, fmt.Sprintf("`%v`", condDef.def))
+			}
 		}
 		return strings.Join(defaults, "<br />")
 	case []interface{}:
@@ -268,11 +336,11 @@ func resourceReferenceDetails(resourceRef []config.ResourceReference) string {
 }
 
 func addVaultResourceDetails(resource config.ResourceReference, resourceDetails string) string {
-	if resource.Type == "vaultSecret" {
+	if resource.Type == "vaultSecret" || resource.Type == "vaultSecretFile" {
 		resourceDetails += "<br/>Vault paths: <br />"
 		resourceDetails += "<ul>"
-		for _, path := range resource.Paths[0:1] {
-			resourceDetails += fmt.Sprintf("<li>`%s`</li>", path)
+		for _, rootPath := range config.VaultRootPaths {
+			resourceDetails += fmt.Sprintf("<li>`%s`</li>", path.Join(rootPath, resource.Default))
 		}
 		resourceDetails += "</ul>"
 	}
@@ -285,9 +353,9 @@ func sortStepParameters(stepData *config.StepData, considerMandatory bool) {
 
 		if considerMandatory {
 			sort.SliceStable(parameters[:], func(i, j int) bool {
-				if parameters[i].Mandatory == parameters[j].Mandatory {
+				if (parameters[i].Mandatory || len(parameters[i].MandatoryIf) > 0) == (parameters[j].Mandatory || len(parameters[j].MandatoryIf) > 0) {
 					return strings.Compare(parameters[i].Name, parameters[j].Name) < 0
-				} else if parameters[i].Mandatory {
+				} else if parameters[i].Mandatory || len(parameters[i].MandatoryIf) > 0 {
 					return true
 				}
 				return false

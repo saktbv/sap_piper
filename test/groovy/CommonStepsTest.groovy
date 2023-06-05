@@ -113,20 +113,26 @@ public class CommonStepsTest extends BasePiperTest{
         'abapAddonAssemblyKitRegisterPackages', //implementing new golang pattern without fields
         'abapAddonAssemblyKitReleasePackages', //implementing new golang pattern without fields
         'abapAddonAssemblyKitReserveNextPackages', //implementing new golang pattern without fields
+        'abapEnvironmentBuild', //implementing new golang pattern without fields
         'abapEnvironmentAssemblePackages', //implementing new golang pattern without fields
         'abapEnvironmentAssembleConfirm', //implementing new golang pattern without fields
         'abapEnvironmentCheckoutBranch', //implementing new golang pattern without fields
         'abapEnvironmentCloneGitRepo', //implementing new golang pattern without fields
+        'abapEnvironmentCreateTag', //implementing new golang pattern without fields
         'abapEnvironmentPullGitRepo', //implementing new golang pattern without fields
         'abapEnvironmentPipeline', // special step (infrastructure)
         'abapEnvironmentRunATCCheck', //implementing new golang pattern without fields
+        'abapEnvironmentRunAUnitTest', //implementing new golang pattern without fields
         'abapEnvironmentCreateSystem', //implementing new golang pattern without fields
+        'abapEnvironmentPushATCSystemConfig', //implementing new golang pattern without fields
         'artifactPrepareVersion',
         'cloudFoundryCreateService', //implementing new golang pattern without fields
         'cloudFoundryCreateServiceKey', //implementing new golang pattern without fields
         'cloudFoundryCreateSpace', //implementing new golang pattern without fields
         'cloudFoundryDeleteService', //implementing new golang pattern without fields
         'cloudFoundryDeleteSpace', //implementing new golang pattern without fields
+        'cloudFoundryDeploy', //implementing new golang pattern without fields
+        'cnbBuild', //implementing new golang pattern without fields
         'durationMeasure', // only expects parameters via signature
         'prepareDefaultValues', // special step (infrastructure)
         'piperPipeline', // special step (infrastructure)
@@ -140,7 +146,9 @@ public class CommonStepsTest extends BasePiperTest{
         'buildSetResult',
         'runClosures',
         'checkmarxExecuteScan', //implementing new golang pattern without fields
+        'checkmarxOneExecuteScan', //implementing new golang pattern without fields
         'githubCreateIssue', //implementing new golang pattern without fields
+        'githubCreatePullRequest', //implementing new golang pattern without fields
         'githubPublishRelease', //implementing new golang pattern without fields
         'githubCheckBranchProtection', //implementing new golang pattern without fields
         'githubCommentIssue', //implementing new golang pattern without fields
@@ -163,8 +171,11 @@ public class CommonStepsTest extends BasePiperTest{
         'sonarExecuteScan', //implementing new golang pattern without fields
         'gctsCreateRepository', //implementing new golang pattern without fields
         'gctsRollback', //implementing new golang pattern without fields
+        'gctsExecuteABAPQualityChecks', //implementing new golang pattern without fields
         'gctsExecuteABAPUnitTests', //implementing new golang pattern without fields
         'gctsCloneRepository', //implementing new golang pattern without fields
+        'codeqlExecuteScan', //implementing new golang pattern without fields
+        'credentialdiggerScan', //implementing new golang pattern without fields
         'fortifyExecuteScan', //implementing new golang pattern without fields
         'gctsDeploy', //implementing new golang pattern without fields
         'containerSaveImage', //implementing new golang pattern without fields
@@ -184,15 +195,40 @@ public class CommonStepsTest extends BasePiperTest{
         'integrationArtifactGetServiceEndpoint', //implementing new golang pattern without fields
         'integrationArtifactDownload', //implementing new golang pattern without fields
         'integrationArtifactUpload', //implementing new golang pattern without fields
+        'integrationArtifactTransport', //implementing new golang pattern without fields          
         'integrationArtifactTriggerIntegrationTest', //implementing new golang pattern without fields
+        'integrationArtifactUnDeploy', //implementing new golang pattern without fields
+        'integrationArtifactResource', //implementing new golang pattern without fields
         'containerExecuteStructureTests', //implementing new golang pattern without fields
         'transportRequestUploadSOLMAN', //implementing new golang pattern without fields
         'transportRequestReqIDFromGit', //implementing new golang pattern without fields
         'transportRequestDocIDFromGit', //implementing new golang pattern without fields
         'gaugeExecuteTests', //implementing new golang pattern without fields
         'batsExecuteTests', //implementing new golang pattern without fields
+        'transportRequestUploadRFC', //implementing new golang pattern without fields
         'writePipelineEnv', //implementing new golang pattern without fields
         'readPipelineEnv', //implementing new golang pattern without fields
+        'transportRequestUploadCTS', //implementing new golang pattern without fields
+        'isChangeInDevelopment', //implementing new golang pattern without fields
+        'golangBuild', //implementing new golang pattern without fields
+        'helmExecute', //implementing new golang pattern without fields
+        'apiProxyDownload', //implementing new golang pattern without fields
+        'apiKeyValueMapDownload', //implementing new golang pattern without fields
+        'apiProviderDownload', //implementing new golang pattern without fields
+        'apiProxyUpload', //implementing new golang pattern without fields
+        'gradleExecuteBuild', //implementing new golang pattern without fields
+        'shellExecute', //implementing new golang pattern without fields
+        'apiKeyValueMapUpload', //implementing new golang pattern without fields
+        'apiProviderUpload', //implementing new golang pattern without fields
+        'pythonBuild', //implementing new golang pattern without fields
+        'awsS3Upload',
+        'apiProxyList', //implementing new golang pattern without fields
+        'azureBlobUpload',
+        'awsS3Upload',
+        'ansSendEvent',
+        'apiProviderList', //implementing new golang pattern without fields    
+        'tmsUpload',
+        'tmsExport',
     ]
 
     @Test

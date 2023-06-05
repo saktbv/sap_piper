@@ -4,14 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"github.com/SAP/jenkins-library/pkg/cloudfoundry"
-	"github.com/SAP/jenkins-library/pkg/command"
-	"github.com/SAP/jenkins-library/pkg/log"
-	"github.com/SAP/jenkins-library/pkg/piperutils"
-	"github.com/SAP/jenkins-library/pkg/telemetry"
-	"github.com/SAP/jenkins-library/pkg/yaml"
-	"github.com/elliotchance/orderedmap"
-	"github.com/pkg/errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,7 +12,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
+
+	"github.com/SAP/jenkins-library/pkg/cloudfoundry"
+	"github.com/SAP/jenkins-library/pkg/command"
+	"github.com/SAP/jenkins-library/pkg/log"
+	"github.com/SAP/jenkins-library/pkg/piperutils"
+	"github.com/SAP/jenkins-library/pkg/telemetry"
+	"github.com/SAP/jenkins-library/pkg/yaml"
+	"github.com/elliotchance/orderedmap"
+	"github.com/pkg/errors"
 )
 
 type cfFileUtil interface {
@@ -182,6 +182,7 @@ func prepareInflux(success bool, config *cloudFoundryDeployOptions, influxData *
 
 	// n/a (literally) is also reported in groovy
 	influxData.deployment_data.fields.artifactURL = "n/a"
+	influxData.deployment_data.fields.commitHash = config.CommitHash
 
 	influxData.deployment_data.fields.deployTime = strings.ToUpper(_now().Format("Jan 02 2006 15:04:05"))
 
@@ -265,9 +266,11 @@ func handleCFNativeDeployment(config *cloudFoundryDeployOptions, command command
 		return err
 	}
 
+	manifestFile, err := getManifestFileName(config)
+
 	log.Entry().Infof("CF native deployment ('%s') with:", config.DeployType)
 	log.Entry().Infof("cfAppName='%s'", appName)
-	log.Entry().Infof("cfManifest='%s'", config.Manifest)
+	log.Entry().Infof("cfManifest='%s'", manifestFile)
 	log.Entry().Infof("cfManifestVariables: '%v'", config.ManifestVariables)
 	log.Entry().Infof("cfManifestVariablesFiles: '%v'", config.ManifestVariablesFiles)
 	log.Entry().Infof("cfdeployDockerImage: '%s'", config.DeployDockerImage)
@@ -368,6 +371,15 @@ func getManifest(name string) (cloudfoundry.Manifest, error) {
 	return cloudfoundry.ReadManifest(name)
 }
 
+func getManifestFileName(config *cloudFoundryDeployOptions) (string, error) {
+
+	manifestFileName := config.Manifest
+	if len(manifestFileName) == 0 {
+		manifestFileName = "manifest.yml"
+	}
+	return manifestFileName, nil
+}
+
 func getAppName(config *cloudFoundryDeployOptions) (string, error) {
 
 	if len(config.AppName) > 0 {
@@ -376,17 +388,16 @@ func getAppName(config *cloudFoundryDeployOptions) (string, error) {
 	if config.DeployType == "blue-green" {
 		return "", fmt.Errorf("Blue-green plugin requires app name to be passed (see https://github.com/bluemixgaragelondon/cf-blue-green-deploy/issues/27)")
 	}
-	if len(config.Manifest) == 0 {
-		return "", fmt.Errorf("Manifest file not provided in configuration. Cannot retrieve app name")
-	}
-	fileExists, err := fileUtils.FileExists(config.Manifest)
+	manifestFile, err := getManifestFileName(config)
+
+	fileExists, err := fileUtils.FileExists(manifestFile)
 	if err != nil {
-		return "", errors.Wrapf(err, "Cannot check if file '%s' exists", config.Manifest)
+		return "", errors.Wrapf(err, "Cannot check if file '%s' exists", manifestFile)
 	}
 	if !fileExists {
-		return "", fmt.Errorf("Manifest file '%s' not found. Cannot retrieve app name", config.Manifest)
+		return "", fmt.Errorf("Manifest file '%s' not found. Cannot retrieve app name", manifestFile)
 	}
-	manifest, err := _getManifest(config.Manifest)
+	manifest, err := _getManifest(manifestFile)
 	if err != nil {
 		return "", err
 	}
@@ -396,14 +407,14 @@ func getAppName(config *cloudFoundryDeployOptions) (string, error) {
 	}
 
 	if len(apps) == 0 {
-		return "", fmt.Errorf("No apps declared in manifest '%s'", config.Manifest)
+		return "", fmt.Errorf("No apps declared in manifest '%s'", manifestFile)
 	}
 	namePropertyExists, err := manifest.ApplicationHasProperty(0, "name")
 	if err != nil {
 		return "", err
 	}
 	if !namePropertyExists {
-		return "", fmt.Errorf("No appName available in manifest '%s'", config.Manifest)
+		return "", fmt.Errorf("No appName available in manifest '%s'", manifestFile)
 	}
 	appName, err := manifest.GetApplicationProperty(0, "name")
 	if err != nil {
@@ -412,10 +423,10 @@ func getAppName(config *cloudFoundryDeployOptions) (string, error) {
 	var name string
 	var ok bool
 	if name, ok = appName.(string); !ok {
-		return "", fmt.Errorf("appName from manifest '%s' has wrong type", config.Manifest)
+		return "", fmt.Errorf("appName from manifest '%s' has wrong type", manifestFile)
 	}
 	if len(name) == 0 {
-		return "", fmt.Errorf("appName from manifest '%s' is empty", config.Manifest)
+		return "", fmt.Errorf("appName from manifest '%s' is empty", manifestFile)
 	}
 	return name, nil
 }
@@ -442,7 +453,7 @@ func handleSmokeTestScript(smokeTestScript string) ([]string, error) {
 			return []string{}, fmt.Errorf("failed to get current working directory for execution of smoke-test script: %w", err)
 		}
 
-		return []string{"--smoke-test", fmt.Sprintf("%s", filepath.Join(pwd, smokeTestScript))}, nil
+		return []string{"--smoke-test", filepath.Join(pwd, smokeTestScript)}, nil
 	}
 	return []string{}, nil
 }
@@ -460,47 +471,46 @@ func prepareBlueGreenCfNativeDeploy(config *cloudFoundryDeployOptions) (string, 
 		deployOptions = append(deployOptions, "--delete-old-apps")
 	}
 
-	if len(config.Manifest) > 0 {
-		manifestFileExists, err := fileUtils.FileExists(config.Manifest)
-		if err != nil {
-			return "", []string{}, []string{}, errors.Wrapf(err, "Cannot check if file '%s' exists", config.Manifest)
-		}
+	manifestFile, err := getManifestFileName(config)
 
-		if !manifestFileExists {
-
-			log.Entry().Infof("Manifest file '%s' does not exist", config.Manifest)
-
-		} else {
-
-			manifestVariables, err := toStringInterfaceMap(toParameterMap(config.ManifestVariables))
-			if err != nil {
-				return "", []string{}, []string{}, errors.Wrapf(err, "Cannot prepare manifest variables: '%v'", config.ManifestVariables)
-			}
-
-			manifestVariablesFiles, err := validateManifestVariablesFiles(config.ManifestVariablesFiles)
-			if err != nil {
-				return "", []string{}, []string{}, errors.Wrapf(err, "Cannot validate manifest variables files '%v'", config.ManifestVariablesFiles)
-			}
-
-			modified, err := _replaceVariables(config.Manifest, manifestVariables, manifestVariablesFiles)
-			if err != nil {
-				return "", []string{}, []string{}, errors.Wrap(err, "Cannot prepare manifest file")
-			}
-
-			if modified {
-				log.Entry().Infof("Manifest file '%s' has been updated (variable substitution)", config.Manifest)
-			} else {
-				log.Entry().Infof("Manifest file '%s' has not been updated (no variable substitution)", config.Manifest)
-			}
-
-			err = handleLegacyCfManifest(config.Manifest)
-			if err != nil {
-				return "", []string{}, []string{}, errors.Wrapf(err, "Cannot handle legacy manifest '%s'", config.Manifest)
-			}
-		}
-	} else {
-		log.Entry().Info("No manifest file configured")
+	manifestFileExists, err := fileUtils.FileExists(manifestFile)
+	if err != nil {
+		return "", []string{}, []string{}, errors.Wrapf(err, "Cannot check if file '%s' exists", manifestFile)
 	}
+
+	if !manifestFileExists {
+
+		log.Entry().Infof("Manifest file '%s' does not exist", manifestFile)
+
+	} else {
+
+		manifestVariables, err := toStringInterfaceMap(toParameterMap(config.ManifestVariables))
+		if err != nil {
+			return "", []string{}, []string{}, errors.Wrapf(err, "Cannot prepare manifest variables: '%v'", config.ManifestVariables)
+		}
+
+		manifestVariablesFiles, err := validateManifestVariablesFiles(config.ManifestVariablesFiles)
+		if err != nil {
+			return "", []string{}, []string{}, errors.Wrapf(err, "Cannot validate manifest variables files '%v'", config.ManifestVariablesFiles)
+		}
+
+		modified, err := _replaceVariables(manifestFile, manifestVariables, manifestVariablesFiles)
+		if err != nil {
+			return "", []string{}, []string{}, errors.Wrap(err, "Cannot prepare manifest file")
+		}
+
+		if modified {
+			log.Entry().Infof("Manifest file '%s' has been updated (variable substitution)", manifestFile)
+		} else {
+			log.Entry().Infof("Manifest file '%s' has not been updated (no variable substitution)", manifestFile)
+		}
+
+		err = handleLegacyCfManifest(manifestFile)
+		if err != nil {
+			return "", []string{}, []string{}, errors.Wrapf(err, "Cannot handle legacy manifest '%s'", manifestFile)
+		}
+	}
+
 	return "blue-green-deploy", deployOptions, smokeTest, nil
 }
 
@@ -611,10 +621,7 @@ func toStringInterfaceMap(in *orderedmap.OrderedMap, err error) (map[string]inte
 
 func checkAndUpdateDeployTypeForNotSupportedManifest(config *cloudFoundryDeployOptions) (string, error) {
 
-	manifestFile := config.Manifest
-	if len(manifestFile) == 0 {
-		manifestFile = "manifest.yml"
-	}
+	manifestFile, err := getManifestFileName(config)
 
 	manifestFileExists, err := fileUtils.FileExists(manifestFile)
 	if err != nil {
@@ -684,7 +691,7 @@ func deployMta(config *cloudFoundryDeployOptions, mtarFilePath string, command c
 		if err != nil {
 			return fmt.Errorf("Cannot prepare mta extension files: %w", err)
 		}
-		err = handleMtaExtensionCredentials(extFile, config.MtaExtensionCredentials)
+		_, _, err = handleMtaExtensionCredentials(extFile, config.MtaExtensionCredentials)
 		if err != nil {
 			return fmt.Errorf("Cannot handle credentials inside mta extension files: %w", err)
 		}
@@ -704,38 +711,45 @@ func deployMta(config *cloudFoundryDeployOptions, mtarFilePath string, command c
 	return err
 }
 
-func handleMtaExtensionCredentials(extFile string, credentials map[string]interface{}) error {
+func handleMtaExtensionCredentials(extFile string, credentials map[string]interface{}) (updated, containsUnresolved bool, err error) {
 
 	log.Entry().Debugf("Inserting credentials into extension file '%s'", extFile)
 
 	b, err := fileUtils.FileRead(extFile)
 	if err != nil {
-		return errors.Wrapf(err, "Cannot handle credentials for mta extension file '%s'", extFile)
+		return false, false, errors.Wrapf(err, "Cannot handle credentials for mta extension file '%s'", extFile)
 	}
 	content := string(b)
 
 	env, err := toMap(_environ(), "=")
 	if err != nil {
-		errors.Wrap(err, "Cannot handle mta extension credentials.")
+		return false, false, errors.Wrap(err, "Cannot handle mta extension credentials.")
 	}
 
-	updated := false
 	missingCredentials := []string{}
 	for name, credentialKey := range credentials {
 		credKey, ok := credentialKey.(string)
 		if !ok {
-			return fmt.Errorf("Cannot handle mta extension credentials: Cannot cast '%v' (type %T) to string", credentialKey, credentialKey)
+			return false, false, fmt.Errorf("cannot handle mta extension credentials: Cannot cast '%v' (type %T) to string", credentialKey, credentialKey)
 		}
-		pattern := "<%= " + name + " %>"
-		if strings.Contains(content, pattern) {
+
+		const allowedVariableNamePattern = "^[-_A-Za-z0-9]+$"
+		alphaNumOnly := regexp.MustCompile(allowedVariableNamePattern)
+		if !alphaNumOnly.MatchString(name) {
+			return false, false, fmt.Errorf("credential key name '%s' contains unsupported character. Must contain only %s", name, allowedVariableNamePattern)
+		}
+		pattern := regexp.MustCompile("<%=\\s*" + name + "\\s*%>")
+		if pattern.MatchString(content) {
 			cred := env[toEnvVarKey(credKey)]
 			if len(cred) == 0 {
 				missingCredentials = append(missingCredentials, credKey)
 				continue
 			}
-			content = strings.Replace(content, pattern, cred, -1)
+			content = pattern.ReplaceAllLiteralString(content, cred)
 			updated = true
 			log.Entry().Debugf("Mta extension credentials handling: Placeholder '%s' has been replaced by credential denoted by '%s'/'%s' in file '%s'", name, credKey, toEnvVarKey(credKey), extFile)
+		} else {
+			log.Entry().Debugf("Mta extension credentials handling: Variable '%s' is not used in file '%s'", name, extFile)
 		}
 	}
 	if len(missingCredentials) > 0 {
@@ -746,7 +760,7 @@ func handleMtaExtensionCredentials(extFile string, credentials map[string]interf
 		// ensure stable order of the entries. Needed e.g. for the tests.
 		sort.Strings(missingCredentials)
 		sort.Strings(missinCredsEnvVarKeyCompatible)
-		return fmt.Errorf("Cannot handle mta extension credentials: No credentials found for '%s'/'%s'. Are these credentials maintained?", missingCredentials, missinCredsEnvVarKeyCompatible)
+		return false, false, fmt.Errorf("cannot handle mta extension credentials: No credentials found for '%s'/'%s'. Are these credentials maintained?", missingCredentials, missinCredsEnvVarKeyCompatible)
 	}
 	if !updated {
 		log.Entry().Debugf("Mta extension credentials handling: Extension file '%s' has not been updated. Seems to contain no credentials.", extFile)
@@ -754,38 +768,29 @@ func handleMtaExtensionCredentials(extFile string, credentials map[string]interf
 		fInfo, err := fileUtils.Stat(extFile)
 		fMode := fInfo.Mode()
 		if err != nil {
-			errors.Wrap(err, "Cannot handle mta extension credentials.")
+			return false, false, errors.Wrap(err, "Cannot handle mta extension credentials.")
 		}
 		err = fileUtils.FileWrite(extFile, []byte(content), fMode)
 		if err != nil {
-			return errors.Wrap(err, "Cannot handle mta extension credentials.")
+			return false, false, errors.Wrap(err, "Cannot handle mta extension credentials.")
 		}
 		log.Entry().Debugf("Mta extension credentials handling: Extension file '%s' has been updated.", extFile)
 	}
 
-	re := regexp.MustCompile(`<%= .* %>`)
+	re := regexp.MustCompile(`<%=.+%>`)
 	placeholders := re.FindAll([]byte(content), -1)
-	if len(placeholders) > 0 {
+	containsUnresolved = (len(placeholders) > 0)
+
+	if containsUnresolved {
 		log.Entry().Warningf("mta extension credential handling: Unresolved placeholders found after inserting credentials: %s", placeholders)
 	}
 
-	return nil
+	return updated, containsUnresolved, nil
 }
 
 func toEnvVarKey(key string) string {
 	key = regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(key, "_")
-	// from here on we have only ascii
-	modifiedKey := ""
-	last := '_'
-	for _, runeVal := range key {
-		if unicode.IsUpper(runeVal) && last != '_' {
-			modifiedKey += "_"
-		}
-		modifiedKey += string(unicode.ToUpper(runeVal))
-		last = runeVal
-	}
-	return modifiedKey
-	// since golang regex does not support negative lookbehinds we have to code it ourselvs
+	return strings.ToUpper(regexp.MustCompile(`([a-z0-9])([A-Z])`).ReplaceAllString(key, "${1}_${2}"))
 }
 
 func toMap(keyValue []string, separator string) (map[string]string, error) {
@@ -808,8 +813,11 @@ func handleMtaExtensionDescriptors(mtaExtensionDescriptor string) ([]string, []s
 			continue
 		}
 		// REVISIT: maybe check if the extension descriptor exists
-		result = append(result, "-e", part)
 		extFiles = append(extFiles, part)
+	}
+	if len(extFiles) > 0 {
+		result = append(result, "-e")
+		result = append(result, strings.Join(extFiles, ","))
 	}
 	return result, extFiles
 }
@@ -910,9 +918,7 @@ func findMtar() (string, error) {
 
 	if len(mtars) > 1 {
 		sMtars := []string{}
-		for _, mtar := range mtars {
-			sMtars = append(sMtars, mtar)
-		}
+		sMtars = append(sMtars, mtars...)
 		return "", fmt.Errorf("Found multiple mtar files matching pattern '%s' (%s), please specify file via parameter 'mtarPath'", pattern, strings.Join(sMtars, ","))
 	}
 
